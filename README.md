@@ -90,6 +90,17 @@ The script self-updates from `/sdcard/Download/rotate-key.sh` on every run, so P
 
 An earlier version of the panel had a third button that dispatched `rotate-key` via Termux's `RUN_COMMAND` intent, aiming for fully headless rotation. It was removed because it can't work reliably on stock Android: the `RUN_COMMAND` intent requires the caller to hold `com.termux.permission.RUN_COMMAND`, and the ADB shell user (`com.android.shell`) can't request or be granted that permission, so Android always rejects the dispatch. The button's "failed" messages were misleading (it kept claiming Step 1 wasn't done when it actually was). Typing `rotate-key` once in Termux is the honest path.
 
+<details>
+<summary>Advanced: the `run-as` trick (and why it's not the default)</summary>
+
+There is one way to execute a command *inside* Termux's sandbox from ADB without the `RUN_COMMAND` intent: `adb shell "cat /sdcard/script.sh | run-as com.termux env HOME=/data/data/com.termux/files/home files/usr/bin/bash"`. This works — but only against a **debug-signed** Termux APK. Android only lets `run-as` enter packages that declare `android:debuggable="true"` in their manifest, which is limited to debug builds.
+
+- The Termux APK from [GitHub releases](https://github.com/termux/termux-app/releases) named `termux-app_vX.Y.Z+github-debug_arm64-v8a.apk` is debug-signed → `run-as` works.
+- The F-Droid build and the `*-release-*` variant from GitHub are release-signed → `run-as` is blocked.
+
+The setup docs recommend the release-signed builds because they're the normal, secure choice. If you genuinely want fully headless remote administration of Termux from your PC (not just the rotation flow), sideload the debug build — but accept that you're running a debuggable app, and Termux installed this way can't be upgraded in place from F-Droid without uninstalling first.
+</details>
+
 ### Files that ship with rotation
 
 - `rotate-ssh.bat` — double-clickable CLI entry point.
