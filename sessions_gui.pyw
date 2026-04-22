@@ -782,27 +782,42 @@ class RotationDialog(tk.Toplevel):
             "device, running this button creates it.",
         )
 
-        # --- Step 2 — rotate key ---
-        step2 = ttk.LabelFrame(outer, text=" Step 2 — Rotate the SSH key ")
+        # --- Step 2 — rotate key (two sub-buttons: keygen, then push per device) ---
+        step2 = ttk.LabelFrame(outer, text=" Step 2 — Rotate the SSH key, then push to each device ")
         step2.pack(fill=tk.X, pady=(4, 4))
         ttk.Label(
             step2, foreground="#9b9b9b", wraplength=660, justify="left",
-            text="Requires: one UAC prompt (accept to replace administrators_authorized_keys). "
-                 "Generates a fresh ed25519 keypair, replaces the public key on Windows, "
-                 "issues a 10-min token, and pushes the new private key to every connected "
-                 "device. Click again within 10 minutes to reuse the current key instead "
-                 "of generating another (useful when cycling through devices).",
+            text="Two sub-steps, because you usually only have one free USB port:\n"
+                 "  2a. Click 'Generate new SSH key' ONCE per rotation. One UAC "
+                 "prompt; replaces administrators_authorized_keys and issues a "
+                 "10-min token.\n"
+                 "  2b. Plug in a device, click 'Push current key', unplug, plug "
+                 "in the next device, click again. Repeat for every device. The "
+                 "push button is safe to click many times — it sends the "
+                 "currently-staged key to whatever is connected right now.",
         ).pack(anchor="w", padx=8, pady=(6, 4))
         self.rotate_btn = ttk.Button(
-            step2, text="2. 🔑 Rotate SSH key (UAC swap + push to connected)",
+            step2, text="2a. 🔑 Generate new SSH key (UAC swap)",
             command=self._start_rotation,
         )
-        self.rotate_btn.pack(fill=tk.X, padx=8, pady=(0, 8))
+        self.rotate_btn.pack(fill=tk.X, padx=8, pady=(0, 4))
         Tooltip(
             self.rotate_btn,
-            "Full rotation: keygen + UAC swap of authorized_keys + token + push "
-            "new private key to connected ADB devices. Does NOT run rotate-key "
-            "on the devices themselves — that's Step 3.",
+            "Keygen + UAC swap of authorized_keys + issue 10-min token. Does "
+            "NOT push to any device — that's 2b. Running this while a session "
+            "is already active will generate a NEW key and invalidate the old "
+            "one; re-push to every device afterward.",
+        )
+        self.push_btn = ttk.Button(
+            step2, text="2b. 📤 Push current key to connected device(s)",
+            command=self._start_push,
+        )
+        self.push_btn.pack(fill=tk.X, padx=8, pady=(0, 8))
+        Tooltip(
+            self.push_btn,
+            "Pushes the currently-staged private key to every connected ADB "
+            "device. Click once per device as you cycle cables. Idempotent — "
+            "re-pushing the same key to the same device is a no-op.",
         )
 
         # --- Step 3 — user-side instructions (can't be automated via ADB) ---
@@ -944,6 +959,7 @@ class RotationDialog(tk.Toplevel):
         self._is_busy = busy
         state = "disabled" if busy else "normal"
         self.rotate_btn.configure(state=state)
+        self.push_btn.configure(state=state)
         self.step1_btn.configure(state=state)
         # stop_btn enabled state is driven by session state, not busy state,
         # so leave it alone here (but disable it entirely while busy to prevent
@@ -1088,8 +1104,27 @@ class RotationDialog(tk.Toplevel):
                                        self.copy_btn.configure(state="normal"),
                                        self._log(f"token issued: {t} (10 min)")))
 
-        # 4. Push to connected devices.
-        self._push_to_connected()
+        self.after(0, lambda: self._log(
+            "=== Keygen complete. Now click 2b for each device you want to update. ==="))
+
+    def _start_push(self):
+        """Step 2b: push the currently-staged private key to every connected
+        ADB device. Safe to click once per device as USB cables are swapped."""
+        if self._is_busy:
+            return
+        if not SSH_KEY_PATH.exists():
+            self._log(f"ERROR: no staged private key at {SSH_KEY_PATH}. "
+                      f"Click 2a (generate) first.")
+            return
+        self._set_buttons_busy(True)
+        self._log("=== Step 2b: pushing current key to connected devices ===")
+        threading.Thread(target=self._do_push, daemon=True).start()
+
+    def _do_push(self):
+        try:
+            self._push_to_connected()
+        finally:
+            self.after(0, lambda: self._set_buttons_busy(False))
 
     def _push_to_connected(self):
         if not ADB_PATH.exists():
@@ -1099,7 +1134,8 @@ class RotationDialog(tk.Toplevel):
         devices = [line.split("\t", 1)[0].strip()
                    for line in out.splitlines() if "\tdevice" in line]
         if not devices:
-            self.after(0, lambda: self._log("no connected devices to push to"))
+            self.after(0, lambda: self._log(
+                "no connected devices to push to — plug one in and click 2b again"))
             return
         for dev in devices:
             self.after(0, lambda d=dev: self._log(f"pushing to {d}..."))

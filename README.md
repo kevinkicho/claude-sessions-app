@@ -58,8 +58,9 @@ Under the hood:
 
 Click **🔑 Rotate SSH** in the toolbar to open a dialog that drives the whole key-rotation flow. Two PC-side buttons + one device-side step:
 
-- **Step 1 — Push rotate-key script to connected device(s)** — ADB-pushes `rotate-key.sh` to `/sdcard/rk.sh` and the current private key to `/sdcard/Download/id_ed25519` on every connected device. Idempotent — safe to re-run.
-- **Step 2 — 🔑 Rotate SSH key (UAC swap + push to connected)** — generates a new ed25519 keypair locally, triggers one UAC prompt to replace `C:\ProgramData\ssh\administrators_authorized_keys`, issues a 10-minute rotation token, and adb-pushes the new private key to every connected Android device.
+- **Step 1 — Push rotate-key script to connected device(s)** — ADB-pushes `rotate-key.sh` to `/sdcard/rk.sh` and the current private key to `/sdcard/Download/id_ed25519` on every connected device. Idempotent — safe to re-run. One-time per device.
+- **Step 2a — 🔑 Generate new SSH key (UAC swap)** — generates a new ed25519 keypair locally, triggers one UAC prompt to replace `C:\ProgramData\ssh\administrators_authorized_keys`, and issues a 10-minute rotation token. Does **not** push to any device — that's 2b. Click ONCE per rotation.
+- **Step 2b — 📤 Push current key to connected device(s)** — pushes the currently-staged private key to whatever devices are connected right now. Split out from 2a because most setups only have one free USB port, so the normal workflow is: rotate once (2a) → plug in device 1, push (2b) → unplug → plug in device 2, push → repeat. Safe to click many times.
 - **Step 3 — on each device** — close Termux (swipe out of Recents), reopen it, and type `rotate-key`. This can't be automated from the PC because Android blocks ADB from holding Termux's `RUN_COMMAND` permission; see [Why no "Run rotate-key" button?](#why-no-run-rotate-key-button) below.
 
 The dialog also shows:
