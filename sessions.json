@@ -1,0 +1,17 @@
+{
+  "ses1": {
+    "folder": "",
+    "auto_claude": true,
+    "symlink_memory": true
+  },
+  "ses2": {
+    "folder": "",
+    "auto_claude": true,
+    "symlink_memory": true
+  },
+  "ses3": {
+    "folder": "",
+    "auto_claude": true,
+    "symlink_memory": true
+  }
+}
