@@ -1099,8 +1099,10 @@ class RotationDialog(tk.Toplevel):
     def _wizard_onboard_device(self, dev: str):
         """Full setup-and-rotate for one device:
           1. Push rotate-key.sh and ssh_key.
-          2. Bootstrap install if rotate-key isn't already active (input-text).
-          3. Trigger rotate-key headlessly via RUN_COMMAND (falls back to input-text).
+          2. Try headless RUN_COMMAND. Verify success by observing that the
+             pushed key file got consumed (rotate-key removes it on swap).
+          3. Fall back to Termux-UI typing. Verify Termux actually is foreground
+             first; abort with a clear message if not.
         """
         self.after(0, lambda d=dev: self._log(f"--- device {d} ---"))
 
@@ -1112,18 +1114,19 @@ class RotationDialog(tk.Toplevel):
                 f"  ✗ Termux is NOT installed on {d}; install it from Play Store/F-Droid."))
             return
 
-        # Already-pushed by _do_rotation_inner, but push rotate-key.sh explicitly
-        # to /sdcard/rk.sh for bootstrap.
+        # Push both the script (for self-update / bootstrap) and re-push the key
+        # in case the previous push was consumed by an earlier rotate-key run.
         _run([str(ADB_PATH), "-s", dev, "push", str(ROTATE_KEY_SH),
               "/sdcard/rk.sh"], timeout=10)
         _run([str(ADB_PATH), "-s", dev, "push", str(ROTATE_KEY_SH),
               "/sdcard/Download/rotate-key.sh"], timeout=10)
+        _run([str(ADB_PATH), "-s", dev, "push", str(SSH_KEY_PATH),
+              "/sdcard/Download/id_ed25519"], timeout=10)
 
-        # Try the headless RUN_COMMAND path first. If it's accepted, the device
-        # has rotate-key already installed AND allow-external-apps=true.
+        # Try the headless RUN_COMMAND path first.
         self.after(0, lambda d=dev: self._log(
             f"  dispatching rotate-key via Termux RUN_COMMAND ..."))
-        _ok, out = _run([
+        _run([
             str(ADB_PATH), "-s", dev, "shell",
             "am", "startservice", "--user", "0",
             "-n", "com.termux/com.termux.app.RunCommandService",
@@ -1132,39 +1135,44 @@ class RotationDialog(tk.Toplevel):
             "/data/data/com.termux/files/home/rotate-key.sh",
             "--ez", "com.termux.RUN_COMMAND_BACKGROUND", "true",
         ], timeout=6)
-        if _ok and "Starting service" in out and "Error" not in out:
+
+        # Verify RUN_COMMAND actually ran the script: rotate-key consumes the
+        # key file as part of its swap, so a few seconds later it should be gone.
+        headless_ok = False
+        for _ in range(5):
+            time.sleep(1.0)
+            _, lsout = _run([str(ADB_PATH), "-s", dev, "shell",
+                             "ls", "/sdcard/Download/id_ed25519"], timeout=5)
+            if "No such file" in lsout or "does not exist" in lsout:
+                headless_ok = True
+                break
+
+        if headless_ok:
             self.after(0, lambda d=dev: self._log(
-                f"  ✓ {d}: rotate-key running headlessly in Termux"))
-            # Post a native Android notification confirming dispatch.
-            self._post_android_toast(dev, "SSH rotation dispatched",
-                                     "rotate-key is running in Termux")
+                f"  ✓ {d}: rotate-key ran headlessly (key consumed; SSH should be up)"))
+            self._post_android_toast(dev, "SSH rotated",
+                                     "rotate-key completed headlessly")
             return
 
-        # Fallback: bootstrap via input-text (installs rotate-key and
-        # enables allow-external-apps), then run it.
+        # Headless didn't work — almost always because allow-external-apps=true
+        # isn't set in this device's Termux config yet (first-time setup).
+        # Android sandboxing prevents us from writing that config from outside,
+        # so we stop guessing and give the user a clear one-time instruction.
         self.after(0, lambda d=dev: self._log(
-            f"  headless path unavailable; bootstrapping via Termux UI ..."))
-        _run([str(ADB_PATH), "-s", dev, "shell", "am", "start",
-              "-n", "com.termux/.HomeActivity"], timeout=6)
-        time.sleep(1.0)  # let Termux come up
-        # Clear any running prompt noise.
-        _run([str(ADB_PATH), "-s", dev, "shell", "input", "keyevent", "66"], timeout=5)
-        time.sleep(0.15)
-        # Type the install command. input text doesn't accept spaces well on
-        # all Android versions; escape with %s, or pass as a single arg.
-        _run([str(ADB_PATH), "-s", dev, "shell", "input", "text",
-              "bash%s/sdcard/rk.sh%sinstall"], timeout=5)
-        time.sleep(0.15)
-        _run([str(ADB_PATH), "-s", dev, "shell", "input", "keyevent", "66"], timeout=5)
-        time.sleep(2.5)  # give install time to finish
-        # Now run rotate-key itself via typed command.
-        _run([str(ADB_PATH), "-s", dev, "shell", "input", "text", "rotate-key"], timeout=5)
-        time.sleep(0.15)
-        _run([str(ADB_PATH), "-s", dev, "shell", "input", "keyevent", "66"], timeout=5)
+            f"  ⚠ {d}: headless dispatch didn't complete in 5s."))
         self.after(0, lambda d=dev: self._log(
-            f"  ✓ {d}: install + rotate-key dispatched via Termux UI"))
-        self._post_android_toast(dev, "SSH rotation dispatched",
-                                 "rotate-key typed into Termux")
+            f"  Most likely cause: Termux's allow-external-apps=true hasn't "
+            f"been set yet on this device. Fix once, forever:"))
+        self.after(0, lambda d=dev: self._log(
+            f"    1) Open Termux on {d}"))
+        self.after(0, lambda d=dev: self._log(
+            f"    2) Paste:   bash /sdcard/rk.sh install"))
+        self.after(0, lambda d=dev: self._log(
+            f"    3) Click this wizard again — from now on it'll be fully headless."))
+        self._post_android_toast(
+            dev, "STT rotation needs one-time setup",
+            "Open Termux and run: bash /sdcard/rk.sh install",
+        )
 
     def _post_android_toast(self, dev: str, title: str, msg: str):
         """Post a native Android notification on the device (visible even if

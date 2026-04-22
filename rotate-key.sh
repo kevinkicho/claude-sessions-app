@@ -51,6 +51,18 @@ if [ -f "$UPDATE_SRC" ] && [ "$UPDATE_SRC" -nt "$SELF" ]; then
     exec bash "$SELF" "$@"
 fi
 
+# --- ensure allow-external-apps is set on every run (idempotent) ---
+# Self-update doesn't re-run the install side-effects, so we need to keep
+# this config in sync here too. Without it, the PC GUI's RUN_COMMAND path
+# is silently rejected by Termux.
+mkdir -p "$HOME/.termux" 2>/dev/null || true
+TP_FILE="$HOME/.termux/termux.properties"
+if ! grep -q '^allow-external-apps' "$TP_FILE" 2>/dev/null; then
+    echo "allow-external-apps = true" >> "$TP_FILE"
+    command -v termux-reload-settings >/dev/null 2>&1 && \
+        termux-reload-settings 2>/dev/null || true
+fi
+
 # --- rotation logic ---
 TOKEN="${1:-}"
 PC_URL="${STT_SERVER:-http://100.125.88.85:8080}"
