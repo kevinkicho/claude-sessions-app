@@ -16,3 +16,10 @@ Thumbs.db
 dist/
 build/
 *.egg-info/
+
+# Never commit rotation secrets
+ssh_key
+ssh_key.pub*
+rotation-tokens.json
+*.log
+tools/

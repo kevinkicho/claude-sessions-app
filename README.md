@@ -52,6 +52,46 @@ Under the hood:
 - Per-row Launch button opens that session in a new console window
 - All options persist to `sessions.json`
 - Works alongside Windows and WSL Claude installs, sharing memory via symlink
+- **SSH key rotation panel** — one-click rotation of the SSH key used by your Android devices, with ADB push + headless Termux invocation
+
+## SSH key rotation panel
+
+Click **🔑 Rotate SSH** in the toolbar to open a dialog that drives the whole key-rotation flow. Three action buttons:
+
+- **🔑 Rotate keys (UAC)** — generates a new ed25519 keypair locally, triggers one UAC prompt to replace `C:\ProgramData\ssh\administrators_authorized_keys`, issues a 10-minute rotation token, and adb-pushes the new private key to every connected Android device at `/sdcard/Download/id_ed25519`.
+- **Push current key** — re-push the existing key to connected devices without rotating. Handy for rolling an additional device onto an already-current key (common when you only have one USB port and need to hit multiple devices sequentially).
+- **▶ Run rotate-key on devices** — fires Termux's `RUN_COMMAND` service intent via ADB so each device runs its `rotate-key` script **headlessly — Termux doesn't need to be open**. Falls back to UI-level input events (bringing Termux forward and typing `rotate-key`) if the intent isn't accepted.
+
+The dialog also shows:
+
+- Live list of ADB-connected devices (with a **Rescan** button).
+- A **Remote token** field with copy-to-clipboard and a live expiry countdown, for updating devices not plugged in (they fetch over Tailnet from the PC's `/keyfile` endpoint — see [speech-to-text-app](https://github.com/kevinkicho/speech-to-text-app)).
+- A scrolling **Log** of every step.
+
+### Device-side `rotate-key`
+
+Each Android device needs the `rotate-key` Termux command installed once. The installer enables Termux's `allow-external-apps` config so the GUI's headless button actually works. One-time bootstrap:
+
+```
+bash /sdcard/rk.sh install
+```
+
+(The GUI and `rotate-ssh.bat` push `rotate-key.sh` to `/sdcard/rk.sh` during rotation.) After install, every future rotation is:
+
+```
+rotate-key
+```
+
+…or zero typing at all, via the **▶ Run rotate-key on devices** button. The script self-updates from `/sdcard/Download/rotate-key.sh` on every run, so PC-side script improvements propagate automatically without a re-install.
+
+### Files that ship with rotation
+
+- `rotate-ssh.bat` — double-clickable CLI entry point.
+- `rotate-ssh.ps1` — main PowerShell; `-TokenOnly` skips keygen+swap and just issues a fresh token for the current key.
+- `swap-authorized-keys.ps1` — the elevated helper that replaces `administrators_authorized_keys` (invoked via `Start-Process -Verb RunAs`).
+- `rotate-key.sh` — Termux client for the device side (install, self-update, local-file or token-fetch modes).
+
+The private key, public key, token state, and rotation logs are kept outside the repo (in a local `tools/` directory that is gitignored and contains the actual secret material — never commit it).
 
 ## Requirements
 

@@ -6,8 +6,8 @@ removes that session; a single centered ＋ below the list adds one.
 Each row: folder picker, auto-claude toggle, link-memory toggle, launch,
 remove. Tooltips explain every field; a Help button opens a readme.
 
-Per-session wrappers (ses1.cmd, ses2.cmd, ...) are created in WRAPPER_DIR
-(default: %USERPROFILE%\\.local\\bin) automatically whenever the GUI saves.
+Per-session wrappers (ses1.cmd, ses2.cmd, ...) are created in
+C:\\Users\\kevin\\.local\\bin automatically whenever the GUI saves.
 """
 import ctypes
 import json
@@ -15,6 +15,8 @@ import os
 import re
 import subprocess
 import sys
+import threading
+import time
 import tkinter as tk
 from pathlib import Path
 from tkinter import ttk, filedialog, messagebox
@@ -28,9 +30,7 @@ except ImportError:
 HERE = Path(__file__).resolve().parent
 CONFIG_PATH = HERE / "sessions.json"
 LAUNCHER = HERE / "session_launch.py"
-# Wrapper scripts (ses1.cmd, ses2.cmd, ...) go here so they're on PATH.
-# Override with env var CLAUDE_SESSIONS_BIN if you want a different location.
-WRAPPER_DIR = Path(os.environ.get("CLAUDE_SESSIONS_BIN", str(Path.home() / ".local" / "bin")))
+WRAPPER_DIR = Path(r"C:\Users\kevin\.local\bin")
 
 DEFAULT_ROWS = 3
 
@@ -322,6 +322,7 @@ class SessionsApp(tk.Tk):
         toolbar = ttk.Frame(self, padding=(16, 10, 16, 4))
         toolbar.pack(fill=tk.X)
         ttk.Button(toolbar, text="?  Help", command=self._show_help, width=10).pack(side=tk.LEFT)
+        ttk.Button(toolbar, text="🔑 Rotate SSH", command=self._open_rotation, width=14).pack(side=tk.LEFT, padx=(6, 0))
         ttk.Label(
             toolbar,
             text="Type a session name (e.g. ses1) in any terminal — PC, SSH, or Termux — to attach.",
@@ -573,6 +574,9 @@ class SessionsApp(tk.Tk):
         except Exception as exc:
             messagebox.showerror("Launch failed", str(exc), parent=self)
 
+    def _open_rotation(self):
+        RotationDialog(self)
+
     def _show_help(self):
         win = tk.Toplevel(self)
         win.title("Claude Sessions — Help")
@@ -646,6 +650,391 @@ class SessionsApp(tk.Tk):
         self.update_idletasks()
         self.geometry(f"{current_w}x{target_h}")
         self.update_idletasks()
+
+
+ADB_PATH = Path(os.environ.get("LOCALAPPDATA", "")) / "Android" / "Sdk" / "platform-tools" / "adb.exe"
+SSH_KEY_PATH = HERE / "ssh_key"
+SSH_PUB_PATH = HERE / "ssh_key.pub"
+TOKENS_PATH = HERE / "rotation-tokens.json"
+SWAP_PS1 = HERE / "swap-authorized-keys.ps1"
+
+def _run(cmd, timeout=30):
+    """Run a command, return (ok, stdout+stderr). Never raises."""
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        return r.returncode == 0, (r.stdout or "") + (r.stderr or "")
+    except Exception as e:
+        return False, str(e)
+
+
+class RotationDialog(tk.Toplevel):
+    """Interactive SSH key rotation window.
+
+    "Rotate keys" — generates a fresh ed25519 keypair, triggers the elevated
+    swap of administrators_authorized_keys (one UAC click), issues a 10-min
+    rotation token, and pushes the new private key to every ADB-connected
+    device at /sdcard/Download/id_ed25519.
+
+    "Push current to connected" — re-pushes the existing key without rotating,
+    useful when you plug in a fresh device after a rotation.
+    """
+
+    def __init__(self, parent: tk.Misc):
+        super().__init__(parent)
+        self.title("Rotate SSH Keys")
+        self.geometry("720x620")
+        self.minsize(620, 520)
+        self.configure(bg=DARK["bg"])
+        apply_dark_title_bar(self)
+
+        self._token: str | None = None
+        self._token_expires_at = 0
+        self._is_busy = False
+
+        self._build_ui()
+        self.after(100, self._refresh_devices_async)
+        self._tick()
+
+    # ---- UI construction ----
+
+    def _build_ui(self):
+        outer = ttk.Frame(self, padding=14)
+        outer.pack(fill=tk.BOTH, expand=True)
+
+        ttk.Label(outer, text="Rotate SSH Keys",
+                  font=("TkDefaultFont", 13, "bold")).pack(anchor="w")
+        ttk.Label(
+            outer,
+            text=("Generates a new keypair on this PC, installs the new public key "
+                  "(one UAC prompt), pushes the new private key to connected Android "
+                  "devices via ADB, and issues a token so remote devices can fetch "
+                  "over Tailnet. On each device, run 'rotate-key' in Termux."),
+            wraplength=660, justify="left", foreground="#aaa",
+        ).pack(anchor="w", pady=(4, 10))
+
+        # --- device list ---
+        dev = ttk.LabelFrame(outer, text=" Connected ADB devices ")
+        dev.pack(fill=tk.X, pady=4)
+        self.devices_box = tk.Listbox(
+            dev, height=4, bg=DARK["surface"], fg=DARK["fg"],
+            selectbackground=DARK["accent"], selectforeground=DARK["bg"],
+            relief="flat", borderwidth=0, highlightthickness=0, font=("Consolas", 10),
+        )
+        self.devices_box.pack(fill=tk.X, padx=8, pady=(6, 4))
+        row = ttk.Frame(dev)
+        row.pack(fill=tk.X, padx=8, pady=(0, 6))
+        ttk.Button(row, text="Rescan", width=10,
+                   command=self._refresh_devices_async).pack(side=tk.LEFT)
+        self.status_var = tk.StringVar(value="Ready.")
+        ttk.Label(row, textvariable=self.status_var,
+                  foreground="#888").pack(side=tk.LEFT, padx=10)
+
+        # --- action buttons ---
+        actions = ttk.Frame(outer)
+        actions.pack(fill=tk.X, pady=(10, 6))
+        self.rotate_btn = ttk.Button(
+            actions, text="🔑 Rotate keys (UAC)",
+            command=self._start_rotation, width=22,
+        )
+        self.rotate_btn.pack(side=tk.LEFT)
+        self.push_btn = ttk.Button(
+            actions, text="Push current key",
+            command=self._start_push_current, width=18,
+        )
+        self.push_btn.pack(side=tk.LEFT, padx=(6, 0))
+        self.runkey_btn = ttk.Button(
+            actions, text="▶ Run rotate-key on devices",
+            command=self._start_run_rotate, width=28,
+        )
+        self.runkey_btn.pack(side=tk.LEFT, padx=(6, 0))
+
+        # --- token row ---
+        token = ttk.LabelFrame(outer, text=" Remote token (for Tailnet devices) ")
+        token.pack(fill=tk.X, pady=(10, 4))
+        token_row = ttk.Frame(token)
+        token_row.pack(fill=tk.X, padx=8, pady=6)
+        self.token_var = tk.StringVar(value="(no active token)")
+        ttk.Entry(token_row, textvariable=self.token_var,
+                  state="readonly", width=40).pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self.copy_btn = ttk.Button(token_row, text="Copy", width=8,
+                                   command=self._copy_token, state="disabled")
+        self.copy_btn.pack(side=tk.LEFT, padx=(6, 0))
+        self.countdown_var = tk.StringVar(value="")
+        ttk.Label(token, textvariable=self.countdown_var,
+                  foreground="#aaa").pack(anchor="w", padx=8, pady=(0, 6))
+
+        # --- log ---
+        log_frame = ttk.LabelFrame(outer, text=" Log ")
+        log_frame.pack(fill=tk.BOTH, expand=True, pady=(4, 0))
+        self.log_text = tk.Text(
+            log_frame, bg=DARK["surface"], fg=DARK["fg"],
+            insertbackground=DARK["fg"], selectbackground=DARK["accent"],
+            relief="flat", borderwidth=0, highlightthickness=0,
+            wrap="word", font=("Consolas", 9),
+        )
+        self.log_text.pack(fill=tk.BOTH, expand=True, padx=6, pady=6)
+        self.log_text.configure(state="disabled")
+
+        # --- footer ---
+        footer = ttk.Frame(outer)
+        footer.pack(fill=tk.X, pady=(10, 0))
+        ttk.Button(footer, text="Close", command=self.destroy, width=10).pack(side=tk.RIGHT)
+
+    # ---- log helper ----
+
+    def _log(self, msg: str):
+        ts = time.strftime("%H:%M:%S")
+        line = f"[{ts}] {msg}\n"
+        self.log_text.configure(state="normal")
+        self.log_text.insert("end", line)
+        self.log_text.see("end")
+        self.log_text.configure(state="disabled")
+
+    def _set_status(self, msg: str):
+        self.status_var.set(msg)
+
+    # ---- device detection ----
+
+    def _refresh_devices_async(self):
+        if self._is_busy:
+            return
+        threading.Thread(target=self._refresh_devices, daemon=True).start()
+
+    def _refresh_devices(self):
+        if not ADB_PATH.exists():
+            self.after(0, lambda: self._log(f"adb not found at {ADB_PATH}"))
+            return
+        ok, out = _run([str(ADB_PATH), "devices"])
+        devices = []
+        for line in out.splitlines():
+            if "\tdevice" in line:
+                devices.append(line.split("\t", 1)[0].strip())
+        self.after(0, self._show_devices, devices)
+
+    def _show_devices(self, devices: list[str]):
+        self.devices_box.delete(0, "end")
+        if not devices:
+            self.devices_box.insert("end", "  (none — plug a device in with USB debugging on)")
+        else:
+            for d in devices:
+                self.devices_box.insert("end", f"  {d}")
+        self._set_status(f"{len(devices)} device(s) detected")
+
+    # ---- rotation flow ----
+
+    def _start_rotation(self):
+        if self._is_busy:
+            return
+        if not SWAP_PS1.exists():
+            self._log(f"ERROR: missing helper {SWAP_PS1}")
+            return
+        self._set_buttons_busy(True)
+        self._log("=== Starting rotation ===")
+        threading.Thread(target=self._do_rotation, daemon=True).start()
+
+    def _do_rotation(self):
+        try:
+            # 1. Generate new ed25519 keypair.
+            self.after(0, lambda: self._set_status("Generating new keypair..."))
+            if SSH_PUB_PATH.exists():
+                stamp = time.strftime("%Y%m%d-%H%M%S")
+                SSH_PUB_PATH.rename(SSH_PUB_PATH.with_name(
+                    SSH_PUB_PATH.name + f".rotated-{stamp}"))
+            for p in (SSH_KEY_PATH, SSH_PUB_PATH):
+                try: p.unlink(missing_ok=True)
+                except Exception: pass
+            comment = f"stt-app-rotated-{time.strftime('%Y-%m-%d')}"
+            ok, out = _run([
+                "ssh-keygen", "-t", "ed25519", "-f", str(SSH_KEY_PATH),
+                "-N", "", "-C", comment, "-q",
+            ], timeout=15)
+            if not ok or not SSH_KEY_PATH.exists():
+                self.after(0, lambda: self._log(f"ssh-keygen failed: {out.strip()}"))
+                return
+            pub = SSH_PUB_PATH.read_text(encoding="utf-8").strip()
+            self.after(0, lambda: self._log(f"generated: {pub}"))
+
+            # 2. Elevated swap — UAC prompt.
+            self.after(0, lambda: self._set_status("Waiting for UAC... click Yes."))
+            self.after(0, lambda: self._log("triggering UAC for authorized_keys swap..."))
+            ps_cmd = (
+                f"Start-Process powershell -Wait -Verb RunAs -ArgumentList "
+                f"@('-NoProfile','-ExecutionPolicy','Bypass','-File',"
+                f"'{SWAP_PS1}','-PubKeyPath','{SSH_PUB_PATH}')"
+            )
+            ok, out = _run(["powershell", "-NoProfile", "-Command", ps_cmd], timeout=120)
+            if not ok:
+                self.after(0, lambda: self._log(f"elevated swap failed: {out.strip()}"))
+                return
+            self.after(0, lambda: self._log("authorized_keys swap complete"))
+
+            # 3. Issue a rotation token.
+            import secrets
+            token = secrets.token_urlsafe(24).replace("_", "").replace("-", "")[:32]
+            expires = int(time.time()) + 600
+            existing = []
+            if TOKENS_PATH.exists():
+                try:
+                    raw = TOKENS_PATH.read_text(encoding="utf-8").strip()
+                    if raw:
+                        data = json.loads(raw)
+                        if isinstance(data, list):
+                            existing = [t for t in data if t.get("expires_at", 0) > time.time()]
+                except Exception:
+                    existing = []
+            existing.append({"token": token, "expires_at": expires,
+                             "issued": time.strftime("%Y-%m-%dT%H:%M:%S")})
+            TOKENS_PATH.write_text(json.dumps(existing, indent=2), encoding="utf-8")
+            self._token = token
+            self._token_expires_at = expires
+            self.after(0, lambda: (self.token_var.set(token),
+                                   self.copy_btn.configure(state="normal"),
+                                   self._log(f"token issued: {token} (expires in 10 min)")))
+
+            # 4. Push to connected devices.
+            self._push_to_connected()
+
+            self.after(0, lambda: self._set_status("Rotation complete."))
+            self.after(0, lambda: self._log("=== Rotation complete ==="))
+        except Exception as e:
+            self.after(0, lambda msg=str(e): self._log(f"ERROR: {msg}"))
+        finally:
+            self.after(0, lambda: self._set_buttons_busy(False))
+
+    def _start_push_current(self):
+        if self._is_busy:
+            return
+        if not SSH_KEY_PATH.exists():
+            self._log("No current key at " + str(SSH_KEY_PATH) + " — rotate first.")
+            return
+        self._set_buttons_busy(True)
+        threading.Thread(target=self._do_push_current, daemon=True).start()
+
+    def _do_push_current(self):
+        try:
+            self._push_to_connected()
+        finally:
+            self.after(0, lambda: self._set_buttons_busy(False))
+
+    def _start_run_rotate(self):
+        """Brings Termux to the foreground on each connected device and types
+        `rotate-key\\n` via ADB input events. No Termux config change needed."""
+        if self._is_busy:
+            return
+        self._set_buttons_busy(True)
+        threading.Thread(target=self._do_run_rotate, daemon=True).start()
+
+    def _do_run_rotate(self):
+        try:
+            if not ADB_PATH.exists():
+                self.after(0, lambda: self._log(f"adb not found at {ADB_PATH}"))
+                return
+            ok, out = _run([str(ADB_PATH), "devices"])
+            devices = [line.split("\t", 1)[0].strip()
+                       for line in out.splitlines() if "\tdevice" in line]
+            if not devices:
+                self.after(0, lambda: self._log("no connected devices"))
+                return
+            for dev in devices:
+                # 1. Verify Termux is installed on the device.
+                _, pmout = _run([str(ADB_PATH), "-s", dev, "shell",
+                                 "pm", "list", "packages", "com.termux"], timeout=5)
+                if "package:com.termux" not in pmout:
+                    self.after(0, lambda d=dev: self._log(
+                        f"  ✗ {d}: Termux is not installed"))
+                    continue
+
+                # 2. Try Termux RUN_COMMAND intent — headless, no UI needed.
+                # Requires allow-external-apps=true in ~/.termux/termux.properties
+                # (which `rotate-key install` sets up automatically).
+                self.after(0, lambda d=dev: self._log(
+                    f"{d}: dispatching rotate-key via Termux RUN_COMMAND (headless)"))
+                _ok, intent_out = _run([
+                    str(ADB_PATH), "-s", dev, "shell",
+                    "am", "startservice", "--user", "0",
+                    "-n", "com.termux/com.termux.app.RunCommandService",
+                    "-a", "com.termux.RUN_COMMAND",
+                    "--es", "com.termux.RUN_COMMAND_PATH",
+                    "/data/data/com.termux/files/home/rotate-key.sh",
+                    "--ez", "com.termux.RUN_COMMAND_BACKGROUND", "true",
+                ], timeout=6)
+                intent_ok = _ok and "Starting service" in intent_out and \
+                            "Error" not in intent_out
+                if intent_ok:
+                    self.after(0, lambda d=dev: self._log(
+                        f"  ✓ {d}: rotate-key running headlessly in Termux"))
+                    continue
+
+                # 3. Fallback: bring Termux forward and type the command.
+                self.after(0, lambda d=dev: self._log(
+                    f"  RUN_COMMAND not accepted on {d} — falling back to UI typing."))
+                _run([str(ADB_PATH), "-s", dev, "shell", "am", "start",
+                      "-n", "com.termux/.HomeActivity"], timeout=5)
+                time.sleep(0.7)
+                _run([str(ADB_PATH), "-s", dev, "shell", "input", "text",
+                      "rotate-key"], timeout=5)
+                time.sleep(0.15)
+                _run([str(ADB_PATH), "-s", dev, "shell", "input", "keyevent",
+                      "66"], timeout=5)
+                self.after(0, lambda d=dev: self._log(
+                    f"  ✓ {d}: rotate-key typed into Termux — watch the device"))
+        finally:
+            self.after(0, lambda: self._set_buttons_busy(False))
+
+    def _set_buttons_busy(self, busy: bool):
+        self._is_busy = busy
+        state = "disabled" if busy else "normal"
+        self.rotate_btn.configure(state=state)
+        self.push_btn.configure(state=state)
+        self.runkey_btn.configure(state=state)
+
+    def _push_to_connected(self):
+        if not ADB_PATH.exists():
+            self.after(0, lambda: self._log(f"adb not found at {ADB_PATH} — skipping push"))
+            return
+        ok, out = _run([str(ADB_PATH), "devices"])
+        devices = [line.split("\t", 1)[0].strip()
+                   for line in out.splitlines() if "\tdevice" in line]
+        if not devices:
+            self.after(0, lambda: self._log("no connected devices to push to"))
+            return
+        for dev in devices:
+            self.after(0, lambda d=dev: self._log(f"pushing to {d}..."))
+            ok, out = _run([str(ADB_PATH), "-s", dev, "push",
+                           str(SSH_KEY_PATH), "/sdcard/Download/id_ed25519"], timeout=30)
+            if ok:
+                self.after(0, lambda d=dev: self._log(
+                    f"  ✓ {d} — in Termux run: rotate-key"))
+            else:
+                self.after(0, lambda d=dev, m=out.strip(): self._log(
+                    f"  ✗ {d} — {m}"))
+        self.after(0, self._refresh_devices_async)
+
+    # ---- token utilities ----
+
+    def _copy_token(self):
+        if not self._token:
+            return
+        try:
+            self.clipboard_clear()
+            self.clipboard_append(self._token)
+            self._set_status("Token copied to clipboard.")
+            self._log("token copied to clipboard")
+        except Exception as e:
+            self._log(f"clipboard error: {e}")
+
+    def _tick(self):
+        if self._token and self._token_expires_at:
+            remaining = int(self._token_expires_at - time.time())
+            if remaining > 0:
+                m, s = divmod(remaining, 60)
+                self.countdown_var.set(f"expires in {m}:{s:02d}")
+            else:
+                self.countdown_var.set("expired")
+                self._token = None
+                self.token_var.set("(no active token)")
+                self.copy_btn.configure(state="disabled")
+        self.after(1000, self._tick)
 
 
 if __name__ == "__main__":
