@@ -322,7 +322,13 @@ class SessionsApp(tk.Tk):
         toolbar = ttk.Frame(self, padding=(16, 10, 16, 4))
         toolbar.pack(fill=tk.X)
         ttk.Button(toolbar, text="?  Help", command=self._show_help, width=10).pack(side=tk.LEFT)
-        ttk.Button(toolbar, text="🔑 Rotate SSH", command=self._open_rotation, width=14).pack(side=tk.LEFT, padx=(6, 0))
+        rotate_toolbar_btn = ttk.Button(toolbar, text="🔑 Rotate SSH",
+                                        command=self._open_rotation, width=14)
+        rotate_toolbar_btn.pack(side=tk.LEFT, padx=(6, 0))
+        Tooltip(rotate_toolbar_btn,
+                "Open the SSH key rotation panel. One-click wizard rotates the key "
+                "used by phone/tablet to connect over SSH, and onboards new devices "
+                "without opening Termux.")
         ttk.Label(
             toolbar,
             text="Type a session name (e.g. ses1) in any terminal — PC, SSH, or Termux — to attach.",
@@ -724,8 +730,12 @@ class RotationDialog(tk.Toplevel):
         self.devices_box.pack(fill=tk.X, padx=8, pady=(6, 4))
         row = ttk.Frame(dev)
         row.pack(fill=tk.X, padx=8, pady=(0, 6))
-        ttk.Button(row, text="Rescan", width=10,
-                   command=self._refresh_devices_async).pack(side=tk.LEFT)
+        rescan_btn = ttk.Button(row, text="Rescan", width=10,
+                                command=self._refresh_devices_async)
+        rescan_btn.pack(side=tk.LEFT)
+        Tooltip(rescan_btn,
+                "Re-query adb for currently-connected devices. Useful after "
+                "plugging in a new device or approving a USB-debugging prompt.")
         self.status_var = tk.StringVar(value="Ready.")
         ttk.Label(row, textvariable=self.status_var,
                   foreground="#888").pack(side=tk.LEFT, padx=10)
@@ -738,46 +748,101 @@ class RotationDialog(tk.Toplevel):
             command=self._start_wizard,
         )
         self.wizard_btn.pack(fill=tk.X)
-        ttk.Label(
+        Tooltip(
+            self.wizard_btn,
+            "First click: generates a new ed25519 keypair, triggers the UAC-gated "
+            "authorized_keys swap, issues a 10-min token, pushes key + script to "
+            "every connected Android device, and runs rotate-key on each.\n\n"
+            "Clicks during the active 10-min window: reuse the current key and "
+            "just onboard any newly-plugged-in devices — no new keypair, no UAC.",
+        )
+        self.wizard_hint = ttk.Label(
             outer,
             text=("Generates a new key, swaps authorized_keys (UAC), and for each "
                   "connected device: pushes the key, installs rotate-key if missing, "
                   "then runs it — all without opening Termux."),
             wraplength=660, foreground="#888", justify="left", font=("TkDefaultFont", 8),
-        ).pack(anchor="w", pady=(2, 8))
+        )
+        self.wizard_hint.pack(anchor="w", pady=(2, 4))
 
-        # --- advanced / step-by-step buttons ---
-        actions = ttk.Frame(outer)
-        actions.pack(fill=tk.X, pady=(4, 6))
-        ttk.Label(actions, text="Advanced:", foreground="#777",
+        # --- advanced toggle + (initially-hidden) advanced button row ---
+        self.show_advanced_var = tk.BooleanVar(value=False)
+        self.advanced_toggle = ttk.Checkbutton(
+            outer, text="Show advanced step-by-step controls",
+            variable=self.show_advanced_var, command=self._toggle_advanced,
+        )
+        self.advanced_toggle.pack(anchor="w", pady=(4, 2))
+        Tooltip(
+            self.advanced_toggle,
+            "Reveal or hide the three buttons that expose each wizard step "
+            "individually. Useful when something went wrong and you want to "
+            "redo just one part.",
+        )
+
+        self.actions_frame = ttk.Frame(outer)
+        # Don't pack yet — hidden by default.
+        ttk.Label(self.actions_frame, text="Advanced:", foreground="#777",
                   font=("TkDefaultFont", 8)).pack(side=tk.LEFT, padx=(0, 6))
         self.rotate_btn = ttk.Button(
-            actions, text="🔑 Rotate keys (UAC)",
+            self.actions_frame, text="🔑 Rotate keys (UAC)",
             command=self._start_rotation, width=22,
         )
         self.rotate_btn.pack(side=tk.LEFT)
+        Tooltip(
+            self.rotate_btn,
+            "Step 1 only: generate a new keypair, swap authorized_keys (UAC), "
+            "issue a token, adb-push the new key to connected devices. Does NOT "
+            "run rotate-key on the devices themselves.",
+        )
         self.push_btn = ttk.Button(
-            actions, text="Push current key",
+            self.actions_frame, text="Push current key",
             command=self._start_push_current, width=18,
         )
         self.push_btn.pack(side=tk.LEFT, padx=(6, 0))
+        Tooltip(
+            self.push_btn,
+            "Push the *current* private key (no rotation) to whatever devices are "
+            "currently connected via ADB. Use when you plug in another device "
+            "during an active session and want it on the same key as the rest.",
+        )
         self.runkey_btn = ttk.Button(
-            actions, text="▶ Run rotate-key on devices",
+            self.actions_frame, text="▶ Run rotate-key on devices",
             command=self._start_run_rotate, width=28,
         )
         self.runkey_btn.pack(side=tk.LEFT, padx=(6, 0))
+        Tooltip(
+            self.runkey_btn,
+            "Dispatch 'rotate-key' on each connected Android device. Tries the "
+            "headless Termux RUN_COMMAND path first; falls back to bringing "
+            "Termux forward and typing the command via ADB input events.",
+        )
 
-        # --- token row ---
-        token = ttk.LabelFrame(outer, text=" Remote token (for Tailnet devices) ")
+        # --- session / token row ---
+        token = ttk.LabelFrame(outer, text=" Rotation session & remote token ")
         token.pack(fill=tk.X, pady=(10, 4))
         token_row = ttk.Frame(token)
         token_row.pack(fill=tk.X, padx=8, pady=6)
-        self.token_var = tk.StringVar(value="(no active token)")
-        ttk.Entry(token_row, textvariable=self.token_var,
-                  state="readonly", width=40).pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self.token_var = tk.StringVar(value="(no active session)")
+        self.token_entry = ttk.Entry(token_row, textvariable=self.token_var,
+                                     state="readonly", width=40)
+        self.token_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        Tooltip(
+            self.token_entry,
+            "The token remote devices (not connected via USB) use with "
+            "`rotate-key <token>` to fetch the current key over Tailnet.",
+        )
         self.copy_btn = ttk.Button(token_row, text="Copy", width=8,
                                    command=self._copy_token, state="disabled")
         self.copy_btn.pack(side=tk.LEFT, padx=(6, 0))
+        Tooltip(self.copy_btn, "Copy the current token to the Windows clipboard.")
+        self.stop_btn = ttk.Button(token_row, text="Stop session", width=14,
+                                   command=self._stop_session, state="disabled")
+        self.stop_btn.pack(side=tk.LEFT, padx=(6, 0))
+        Tooltip(
+            self.stop_btn,
+            "End the active 10-min rotation session right now. Next wizard click "
+            "will generate a fresh keypair and do a full rotation.",
+        )
         self.countdown_var = tk.StringVar(value="")
         ttk.Label(token, textvariable=self.countdown_var,
                   foreground="#aaa").pack(anchor="w", padx=8, pady=(0, 6))
@@ -948,6 +1013,41 @@ class RotationDialog(tk.Toplevel):
         self.push_btn.configure(state=state)
         self.runkey_btn.configure(state=state)
         self.wizard_btn.configure(state=state)
+        # stop_btn enabled state is driven by session state, not busy state,
+        # so leave it alone here (but disable it entirely while busy to prevent
+        # mid-operation cancellation).
+        if busy:
+            self.stop_btn.configure(state="disabled")
+        else:
+            self.stop_btn.configure(
+                state="normal" if self._is_session_active() else "disabled")
+
+    def _is_session_active(self) -> bool:
+        return bool(self._token) and self._token_expires_at > time.time()
+
+    def _stop_session(self):
+        """End the current rotation window early. Invalidates the token so the
+        next wizard click starts fresh (keygen + UAC)."""
+        self._token = None
+        self._token_expires_at = 0
+        self.token_var.set("(no active session)")
+        self.copy_btn.configure(state="disabled")
+        self.stop_btn.configure(state="disabled")
+        self.countdown_var.set("")
+        # Also wipe tokens on disk so server can't honor any leftover values.
+        try:
+            TOKENS_PATH.unlink(missing_ok=True)
+        except Exception:
+            pass
+        self._log("Rotation session ended — next wizard click will generate a new key.")
+        self._set_status("Session ended.")
+
+    def _toggle_advanced(self):
+        if self.show_advanced_var.get():
+            self.actions_frame.pack(fill=tk.X, pady=(4, 6),
+                                    before=self.token_entry.master.master)
+        else:
+            self.actions_frame.pack_forget()
 
     # ---- one-click wizard ----
 
@@ -963,12 +1063,17 @@ class RotationDialog(tk.Toplevel):
 
     def _do_wizard(self):
         try:
-            # Step 1: full rotation (keygen + UAC swap + token + adb push).
-            self._do_rotation_inner()
+            # Step 1: if there's an active session (token not yet expired),
+            # reuse the current key. Otherwise do a full rotation.
+            if self._is_session_active():
+                self.after(0, lambda: self._log(
+                    "Active rotation session — reusing current key and "
+                    "onboarding newly-connected devices (no new keypair, no UAC)."))
+                self._push_to_connected()
+            else:
+                self._do_rotation_inner()
 
-            # Step 2: for each device, make sure rotate-key is installed
-            # (bootstrap via input-text if not), then trigger rotate-key
-            # headlessly via RUN_COMMAND.
+            # Step 2: onboard each connected device (install + run rotate-key).
             if not ADB_PATH.exists():
                 self.after(0, lambda: self._log(
                     "adb not found — skipping per-device setup"))
@@ -979,7 +1084,7 @@ class RotationDialog(tk.Toplevel):
             if not devices:
                 self.after(0, lambda: self._log(
                     "No ADB devices connected; skipping per-device steps. "
-                    "Plug one in and use 'Push current key' + '▶ Run rotate-key'."))
+                    "Plug one in and click the wizard button again."))
                 return
             for dev in devices:
                 self._wizard_onboard_device(dev)
@@ -1030,6 +1135,9 @@ class RotationDialog(tk.Toplevel):
         if _ok and "Starting service" in out and "Error" not in out:
             self.after(0, lambda d=dev: self._log(
                 f"  ✓ {d}: rotate-key running headlessly in Termux"))
+            # Post a native Android notification confirming dispatch.
+            self._post_android_toast(dev, "SSH rotation dispatched",
+                                     "rotate-key is running in Termux")
             return
 
         # Fallback: bootstrap via input-text (installs rotate-key and
@@ -1055,6 +1163,23 @@ class RotationDialog(tk.Toplevel):
         _run([str(ADB_PATH), "-s", dev, "shell", "input", "keyevent", "66"], timeout=5)
         self.after(0, lambda d=dev: self._log(
             f"  ✓ {d}: install + rotate-key dispatched via Termux UI"))
+        self._post_android_toast(dev, "SSH rotation dispatched",
+                                 "rotate-key typed into Termux")
+
+    def _post_android_toast(self, dev: str, title: str, msg: str):
+        """Post a native Android notification on the device (visible even if
+        Termux is closed). Uses adb's `cmd notification post`, which runs in
+        the shell user context and doesn't require any Termux package."""
+        try:
+            _run([
+                str(ADB_PATH), "-s", dev, "shell",
+                "cmd", "notification", "post",
+                "-S", "bigtext",
+                "-t", title,
+                "stt-rotate", msg,
+            ], timeout=5)
+        except Exception:
+            pass
 
     def _do_rotation_inner(self):
         """Shared body for 'Rotate keys' and the wizard — keygen + swap + token + push."""
@@ -1158,12 +1283,19 @@ class RotationDialog(tk.Toplevel):
             remaining = int(self._token_expires_at - time.time())
             if remaining > 0:
                 m, s = divmod(remaining, 60)
-                self.countdown_var.set(f"expires in {m}:{s:02d}")
+                self.countdown_var.set(
+                    f"Session active — token expires in {m}:{s:02d}. "
+                    f"Wizard re-clicks reuse this key.")
+                if not self._is_busy:
+                    self.stop_btn.configure(state="normal")
             else:
-                self.countdown_var.set("expired")
+                self.countdown_var.set("Session ended (token expired).")
                 self._token = None
-                self.token_var.set("(no active token)")
+                self.token_var.set("(no active session)")
                 self.copy_btn.configure(state="disabled")
+                self.stop_btn.configure(state="disabled")
+                try: TOKENS_PATH.unlink(missing_ok=True)
+                except Exception: pass
         self.after(1000, self._tick)
 
 

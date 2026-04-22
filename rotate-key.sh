@@ -104,8 +104,24 @@ if ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=5 
     kevin@100.125.88.85 'echo ROTATED_OK' 2>&1; then
     rm -f "$BACKUP"
     echo "SUCCESS: key rotated and working."
+    # Best-effort toast/notification so the user sees confirmation on the
+    # device even if the PC triggered this headlessly. termux-toast requires
+    # the termux-api package; silently skip if unavailable.
+    if command -v termux-toast >/dev/null 2>&1; then
+        termux-toast -b "#16a34a" -c "#ffffff" -g top \
+            "SSH key rotated · $(date +%H:%M) · connected to PC" 2>/dev/null || true
+    fi
+    if command -v termux-notification >/dev/null 2>&1; then
+        termux-notification --title "SSH key rotated" \
+            --content "connected to PC — $(date +'%b %d %H:%M')" \
+            --priority default 2>/dev/null || true
+    fi
 else
     echo "ERROR: SSH test failed. Rolling back to previous key..." >&2
     [ -f "$BACKUP" ] && mv "$BACKUP" "$KEY"
+    if command -v termux-toast >/dev/null 2>&1; then
+        termux-toast -b "#dc2626" -c "#ffffff" \
+            "SSH key rotation FAILED · rolled back" 2>/dev/null || true
+    fi
     exit 1
 fi
