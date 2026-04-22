@@ -64,8 +64,12 @@ if ! grep -q '^allow-external-apps' "$TP_FILE" 2>/dev/null; then
 fi
 
 # --- rotation logic ---
+# STT_SERVER must be set to the PC's Tailscale URL (e.g. http://100.x.y.z:8080)
+# for token-mode fetches. STT_SSH_HOST sets the 'user@host' the post-install
+# SSH test connects to (e.g. alice@100.x.y.z).
 TOKEN="${1:-}"
-PC_URL="${STT_SERVER:-http://100.125.88.85:8080}"
+PC_URL="${STT_SERVER:-}"
+SSH_HOST="${STT_SSH_HOST:-}"
 SSH_DIR="$HOME/.ssh"
 KEY="$SSH_DIR/id_ed25519"
 NEW="$SSH_DIR/id_ed25519.new"
@@ -86,6 +90,10 @@ if [ -n "$LOCAL" ]; then
     chmod 600 "$NEW"
     rm -f "$LOCAL"
 elif [ -n "$TOKEN" ]; then
+    if [ -z "$PC_URL" ]; then
+        echo "ERROR: STT_SERVER env var is not set (e.g. export STT_SERVER=http://100.x.y.z:8080)" >&2
+        exit 1
+    fi
     echo "Fetching new key from ${PC_URL}/keyfile ..."
     http_code=$(curl -sS -o "$NEW" -w "%{http_code}" \
         -H "X-Rotation-Token: $TOKEN" \
@@ -112,8 +120,18 @@ fi
 mv "$NEW" "$KEY"
 
 echo "Key installed; testing SSH..."
-if ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=5 \
-    kevin@100.125.88.85 'echo ROTATED_OK' 2>&1; then
+if [ -z "$SSH_HOST" ]; then
+    echo "WARNING: STT_SSH_HOST not set; skipping SSH connectivity test." >&2
+    echo "         Set it (e.g. export STT_SSH_HOST=alice@100.x.y.z) to verify rotations."
+    SSH_OK=0
+else
+    set +e
+    ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=5 \
+        "$SSH_HOST" 'echo ROTATED_OK' 2>&1
+    SSH_OK=$?
+    set -e
+fi
+if [ "$SSH_OK" -eq 0 ]; then
     rm -f "$BACKUP"
     echo "SUCCESS: key rotated and working."
     # Best-effort toast/notification so the user sees confirmation on the

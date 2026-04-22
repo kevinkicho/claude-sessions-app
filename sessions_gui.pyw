@@ -7,7 +7,7 @@ Each row: folder picker, auto-claude toggle, link-memory toggle, launch,
 remove. Tooltips explain every field; a Help button opens a readme.
 
 Per-session wrappers (ses1.cmd, ses2.cmd, ...) are created in
-C:\\Users\\kevin\\.local\\bin automatically whenever the GUI saves.
+%USERPROFILE%\.local\bin automatically whenever the GUI saves.
 """
 import ctypes
 import json
@@ -30,7 +30,7 @@ except ImportError:
 HERE = Path(__file__).resolve().parent
 CONFIG_PATH = HERE / "sessions.json"
 LAUNCHER = HERE / "session_launch.py"
-WRAPPER_DIR = Path(r"C:\Users\kevin\.local\bin")
+WRAPPER_DIR = Path.home() / ".local" / "bin"
 
 DEFAULT_ROWS = 3
 
@@ -128,11 +128,12 @@ Reload
 
 Phone / tablet setup
 
-On each Android device in Termux, run this once:
+On each Android device in Termux, run this once (replace USER and
+PC-TAILNET-IP with your Windows username and the PC's Tailscale IP):
 
   for i in $(seq 1 50); do
     grep -q "^alias ses$i=" ~/.bashrc ||
-    echo "alias ses$i='ssh -t kevin@100.125.88.85 ses$i'" >> ~/.bashrc
+    echo "alias ses$i='ssh -t USER@PC-TAILNET-IP ses$i'" >> ~/.bashrc
   done
   source ~/.bashrc
 
@@ -745,11 +746,17 @@ class RotationDialog(tk.Toplevel):
         step1.pack(fill=tk.X, pady=(10, 4))
         ttk.Label(
             step1, foreground="#9b9b9b", wraplength=660, justify="left",
-            text="Requires: the device plugged in via USB with ADB debugging allowed. "
-                 "Pushes rotate-key.sh + the current private key. Then open Termux on "
-                 "the device and paste this once — it enables headless rotations "
-                 "forever after:",
+            text="Requires: device plugged in via USB with ADB debugging allowed.",
         ).pack(anchor="w", padx=8, pady=(6, 2))
+        ttk.Label(
+            step1, foreground="#d9d9d9", wraplength=660, justify="left",
+            text=("The button below pushes rotate-key.sh to /sdcard/rk.sh on the "
+                  "device — that's the ONLY way the file gets there. If /sdcard/rk.sh "
+                  "doesn't exist on a device, it means this button hasn't been "
+                  "clicked for that device yet (or the file was deleted).\n\n"
+                  "After the button succeeds, open Termux on the device once and "
+                  "paste the following — it enables headless rotations forever:"),
+        ).pack(anchor="w", padx=8, pady=(0, 2))
         ttk.Label(
             step1, foreground=DARK["accent"], font=("Consolas", 10, "bold"),
             text="    bash /sdcard/rk.sh install",
@@ -763,7 +770,8 @@ class RotationDialog(tk.Toplevel):
             self.step1_btn,
             "Pushes rotate-key.sh to /sdcard/rk.sh and the current SSH key to "
             "/sdcard/Download/id_ed25519 on every ADB-connected device. Safe to "
-            "run repeatedly — idempotent.",
+            "run repeatedly — idempotent. If /sdcard/rk.sh is missing on a "
+            "device, running this button creates it.",
         )
 
         # --- Step 2 — rotate key ---
@@ -983,11 +991,15 @@ class RotationDialog(tk.Toplevel):
                 else:
                     self.after(0, lambda d=dev: self._log(
                         f"  ⚠ {d}: dispatch didn't complete in 5s. "
-                        f"Step 1 ('bash /sdcard/rk.sh install') probably hasn't "
-                        f"been run on this device yet. Do Step 1 first, then "
-                        f"retry Step 3."))
+                        f"This device hasn't finished Step 1 yet. Do both:"))
+                    self.after(0, lambda d=dev: self._log(
+                        f"    a) On the PC, click Step 1 (to push /sdcard/rk.sh)."))
+                    self.after(0, lambda d=dev: self._log(
+                        f"    b) In Termux on {d}, paste: bash /sdcard/rk.sh install"))
+                    self.after(0, lambda d=dev: self._log(
+                        f"  Then retry Step 3. It'll be headless forever after that."))
                     self._post_android_toast(
-                        dev, "Rotation needs Step 1",
+                        dev, "Rotation needs Step 1 on this device",
                         "Open Termux, run: bash /sdcard/rk.sh install",
                     )
         finally:
