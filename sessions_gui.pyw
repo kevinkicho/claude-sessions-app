@@ -657,6 +657,7 @@ SSH_KEY_PATH = HERE / "ssh_key"
 SSH_PUB_PATH = HERE / "ssh_key.pub"
 TOKENS_PATH = HERE / "rotation-tokens.json"
 SWAP_PS1 = HERE / "swap-authorized-keys.ps1"
+ROTATE_KEY_SH = HERE / "rotate-key.sh"
 
 def _run(cmd, timeout=30):
     """Run a command, return (ok, stdout+stderr). Never raises."""
@@ -729,9 +730,27 @@ class RotationDialog(tk.Toplevel):
         ttk.Label(row, textvariable=self.status_var,
                   foreground="#888").pack(side=tk.LEFT, padx=10)
 
-        # --- action buttons ---
+        # --- primary one-click wizard button ---
+        primary = ttk.Frame(outer)
+        primary.pack(fill=tk.X, pady=(10, 4))
+        self.wizard_btn = ttk.Button(
+            primary, text="🪄  Rotate everything (one-click wizard)",
+            command=self._start_wizard,
+        )
+        self.wizard_btn.pack(fill=tk.X)
+        ttk.Label(
+            outer,
+            text=("Generates a new key, swaps authorized_keys (UAC), and for each "
+                  "connected device: pushes the key, installs rotate-key if missing, "
+                  "then runs it — all without opening Termux."),
+            wraplength=660, foreground="#888", justify="left", font=("TkDefaultFont", 8),
+        ).pack(anchor="w", pady=(2, 8))
+
+        # --- advanced / step-by-step buttons ---
         actions = ttk.Frame(outer)
-        actions.pack(fill=tk.X, pady=(10, 6))
+        actions.pack(fill=tk.X, pady=(4, 6))
+        ttk.Label(actions, text="Advanced:", foreground="#777",
+                  font=("TkDefaultFont", 8)).pack(side=tk.LEFT, padx=(0, 6))
         self.rotate_btn = ttk.Button(
             actions, text="🔑 Rotate keys (UAC)",
             command=self._start_rotation, width=22,
@@ -834,70 +853,11 @@ class RotationDialog(tk.Toplevel):
 
     def _do_rotation(self):
         try:
-            # 1. Generate new ed25519 keypair.
-            self.after(0, lambda: self._set_status("Generating new keypair..."))
-            if SSH_PUB_PATH.exists():
-                stamp = time.strftime("%Y%m%d-%H%M%S")
-                SSH_PUB_PATH.rename(SSH_PUB_PATH.with_name(
-                    SSH_PUB_PATH.name + f".rotated-{stamp}"))
-            for p in (SSH_KEY_PATH, SSH_PUB_PATH):
-                try: p.unlink(missing_ok=True)
-                except Exception: pass
-            comment = f"stt-app-rotated-{time.strftime('%Y-%m-%d')}"
-            ok, out = _run([
-                "ssh-keygen", "-t", "ed25519", "-f", str(SSH_KEY_PATH),
-                "-N", "", "-C", comment, "-q",
-            ], timeout=15)
-            if not ok or not SSH_KEY_PATH.exists():
-                self.after(0, lambda: self._log(f"ssh-keygen failed: {out.strip()}"))
-                return
-            pub = SSH_PUB_PATH.read_text(encoding="utf-8").strip()
-            self.after(0, lambda: self._log(f"generated: {pub}"))
-
-            # 2. Elevated swap — UAC prompt.
-            self.after(0, lambda: self._set_status("Waiting for UAC... click Yes."))
-            self.after(0, lambda: self._log("triggering UAC for authorized_keys swap..."))
-            ps_cmd = (
-                f"Start-Process powershell -Wait -Verb RunAs -ArgumentList "
-                f"@('-NoProfile','-ExecutionPolicy','Bypass','-File',"
-                f"'{SWAP_PS1}','-PubKeyPath','{SSH_PUB_PATH}')"
-            )
-            ok, out = _run(["powershell", "-NoProfile", "-Command", ps_cmd], timeout=120)
-            if not ok:
-                self.after(0, lambda: self._log(f"elevated swap failed: {out.strip()}"))
-                return
-            self.after(0, lambda: self._log("authorized_keys swap complete"))
-
-            # 3. Issue a rotation token.
-            import secrets
-            token = secrets.token_urlsafe(24).replace("_", "").replace("-", "")[:32]
-            expires = int(time.time()) + 600
-            existing = []
-            if TOKENS_PATH.exists():
-                try:
-                    raw = TOKENS_PATH.read_text(encoding="utf-8").strip()
-                    if raw:
-                        data = json.loads(raw)
-                        if isinstance(data, list):
-                            existing = [t for t in data if t.get("expires_at", 0) > time.time()]
-                except Exception:
-                    existing = []
-            existing.append({"token": token, "expires_at": expires,
-                             "issued": time.strftime("%Y-%m-%dT%H:%M:%S")})
-            TOKENS_PATH.write_text(json.dumps(existing, indent=2), encoding="utf-8")
-            self._token = token
-            self._token_expires_at = expires
-            self.after(0, lambda: (self.token_var.set(token),
-                                   self.copy_btn.configure(state="normal"),
-                                   self._log(f"token issued: {token} (expires in 10 min)")))
-
-            # 4. Push to connected devices.
-            self._push_to_connected()
-
+            self._do_rotation_inner()
             self.after(0, lambda: self._set_status("Rotation complete."))
             self.after(0, lambda: self._log("=== Rotation complete ==="))
         except Exception as e:
-            self.after(0, lambda msg=str(e): self._log(f"ERROR: {msg}"))
+            self.after(0, lambda m=str(e): self._log(f"ERROR: {m}"))
         finally:
             self.after(0, lambda: self._set_buttons_busy(False))
 
@@ -987,6 +947,176 @@ class RotationDialog(tk.Toplevel):
         self.rotate_btn.configure(state=state)
         self.push_btn.configure(state=state)
         self.runkey_btn.configure(state=state)
+        self.wizard_btn.configure(state=state)
+
+    # ---- one-click wizard ----
+
+    def _start_wizard(self):
+        if self._is_busy:
+            return
+        if not SWAP_PS1.exists() or not ROTATE_KEY_SH.exists():
+            self._log(f"ERROR: missing helpers (need {SWAP_PS1.name}, {ROTATE_KEY_SH.name})")
+            return
+        self._set_buttons_busy(True)
+        self._log("=== Starting one-click rotate-all wizard ===")
+        threading.Thread(target=self._do_wizard, daemon=True).start()
+
+    def _do_wizard(self):
+        try:
+            # Step 1: full rotation (keygen + UAC swap + token + adb push).
+            self._do_rotation_inner()
+
+            # Step 2: for each device, make sure rotate-key is installed
+            # (bootstrap via input-text if not), then trigger rotate-key
+            # headlessly via RUN_COMMAND.
+            if not ADB_PATH.exists():
+                self.after(0, lambda: self._log(
+                    "adb not found — skipping per-device setup"))
+                return
+            _, listout = _run([str(ADB_PATH), "devices"])
+            devices = [line.split("\t", 1)[0].strip()
+                       for line in listout.splitlines() if "\tdevice" in line]
+            if not devices:
+                self.after(0, lambda: self._log(
+                    "No ADB devices connected; skipping per-device steps. "
+                    "Plug one in and use 'Push current key' + '▶ Run rotate-key'."))
+                return
+            for dev in devices:
+                self._wizard_onboard_device(dev)
+
+            self.after(0, lambda: self._set_status("Wizard complete."))
+            self.after(0, lambda: self._log("=== Wizard complete ==="))
+        except Exception as e:
+            self.after(0, lambda m=str(e): self._log(f"ERROR: {m}"))
+        finally:
+            self.after(0, lambda: self._set_buttons_busy(False))
+
+    def _wizard_onboard_device(self, dev: str):
+        """Full setup-and-rotate for one device:
+          1. Push rotate-key.sh and ssh_key.
+          2. Bootstrap install if rotate-key isn't already active (input-text).
+          3. Trigger rotate-key headlessly via RUN_COMMAND (falls back to input-text).
+        """
+        self.after(0, lambda d=dev: self._log(f"--- device {d} ---"))
+
+        # Check Termux is installed.
+        _, pmout = _run([str(ADB_PATH), "-s", dev, "shell",
+                         "pm", "list", "packages", "com.termux"], timeout=5)
+        if "package:com.termux" not in pmout:
+            self.after(0, lambda d=dev: self._log(
+                f"  ✗ Termux is NOT installed on {d}; install it from Play Store/F-Droid."))
+            return
+
+        # Already-pushed by _do_rotation_inner, but push rotate-key.sh explicitly
+        # to /sdcard/rk.sh for bootstrap.
+        _run([str(ADB_PATH), "-s", dev, "push", str(ROTATE_KEY_SH),
+              "/sdcard/rk.sh"], timeout=10)
+        _run([str(ADB_PATH), "-s", dev, "push", str(ROTATE_KEY_SH),
+              "/sdcard/Download/rotate-key.sh"], timeout=10)
+
+        # Try the headless RUN_COMMAND path first. If it's accepted, the device
+        # has rotate-key already installed AND allow-external-apps=true.
+        self.after(0, lambda d=dev: self._log(
+            f"  dispatching rotate-key via Termux RUN_COMMAND ..."))
+        _ok, out = _run([
+            str(ADB_PATH), "-s", dev, "shell",
+            "am", "startservice", "--user", "0",
+            "-n", "com.termux/com.termux.app.RunCommandService",
+            "-a", "com.termux.RUN_COMMAND",
+            "--es", "com.termux.RUN_COMMAND_PATH",
+            "/data/data/com.termux/files/home/rotate-key.sh",
+            "--ez", "com.termux.RUN_COMMAND_BACKGROUND", "true",
+        ], timeout=6)
+        if _ok and "Starting service" in out and "Error" not in out:
+            self.after(0, lambda d=dev: self._log(
+                f"  ✓ {d}: rotate-key running headlessly in Termux"))
+            return
+
+        # Fallback: bootstrap via input-text (installs rotate-key and
+        # enables allow-external-apps), then run it.
+        self.after(0, lambda d=dev: self._log(
+            f"  headless path unavailable; bootstrapping via Termux UI ..."))
+        _run([str(ADB_PATH), "-s", dev, "shell", "am", "start",
+              "-n", "com.termux/.HomeActivity"], timeout=6)
+        time.sleep(1.0)  # let Termux come up
+        # Clear any running prompt noise.
+        _run([str(ADB_PATH), "-s", dev, "shell", "input", "keyevent", "66"], timeout=5)
+        time.sleep(0.15)
+        # Type the install command. input text doesn't accept spaces well on
+        # all Android versions; escape with %s, or pass as a single arg.
+        _run([str(ADB_PATH), "-s", dev, "shell", "input", "text",
+              "bash%s/sdcard/rk.sh%sinstall"], timeout=5)
+        time.sleep(0.15)
+        _run([str(ADB_PATH), "-s", dev, "shell", "input", "keyevent", "66"], timeout=5)
+        time.sleep(2.5)  # give install time to finish
+        # Now run rotate-key itself via typed command.
+        _run([str(ADB_PATH), "-s", dev, "shell", "input", "text", "rotate-key"], timeout=5)
+        time.sleep(0.15)
+        _run([str(ADB_PATH), "-s", dev, "shell", "input", "keyevent", "66"], timeout=5)
+        self.after(0, lambda d=dev: self._log(
+            f"  ✓ {d}: install + rotate-key dispatched via Termux UI"))
+
+    def _do_rotation_inner(self):
+        """Shared body for 'Rotate keys' and the wizard — keygen + swap + token + push."""
+        # 1. Generate new ed25519 keypair.
+        self.after(0, lambda: self._set_status("Generating new keypair..."))
+        if SSH_PUB_PATH.exists():
+            stamp = time.strftime("%Y%m%d-%H%M%S")
+            SSH_PUB_PATH.rename(SSH_PUB_PATH.with_name(
+                SSH_PUB_PATH.name + f".rotated-{stamp}"))
+        for p in (SSH_KEY_PATH, SSH_PUB_PATH):
+            try: p.unlink(missing_ok=True)
+            except Exception: pass
+        comment = f"stt-app-rotated-{time.strftime('%Y-%m-%d')}"
+        ok, out = _run([
+            "ssh-keygen", "-t", "ed25519", "-f", str(SSH_KEY_PATH),
+            "-N", "", "-C", comment, "-q",
+        ], timeout=15)
+        if not ok or not SSH_KEY_PATH.exists():
+            self.after(0, lambda m=out.strip(): self._log(f"ssh-keygen failed: {m}"))
+            return
+        pub = SSH_PUB_PATH.read_text(encoding="utf-8").strip()
+        self.after(0, lambda p=pub: self._log(f"generated: {p}"))
+
+        # 2. Elevated swap — UAC prompt.
+        self.after(0, lambda: self._set_status("Waiting for UAC... click Yes."))
+        self.after(0, lambda: self._log("triggering UAC for authorized_keys swap..."))
+        ps_cmd = (
+            f"Start-Process powershell -Wait -Verb RunAs -ArgumentList "
+            f"@('-NoProfile','-ExecutionPolicy','Bypass','-File',"
+            f"'{SWAP_PS1}','-PubKeyPath','{SSH_PUB_PATH}')"
+        )
+        ok, out = _run(["powershell", "-NoProfile", "-Command", ps_cmd], timeout=120)
+        if not ok:
+            self.after(0, lambda m=out.strip(): self._log(f"elevated swap failed: {m}"))
+            return
+        self.after(0, lambda: self._log("authorized_keys swap complete"))
+
+        # 3. Issue a rotation token.
+        import secrets
+        token = secrets.token_urlsafe(24).replace("_", "").replace("-", "")[:32]
+        expires = int(time.time()) + 600
+        existing = []
+        if TOKENS_PATH.exists():
+            try:
+                raw = TOKENS_PATH.read_text(encoding="utf-8").strip()
+                if raw:
+                    data = json.loads(raw)
+                    if isinstance(data, list):
+                        existing = [t for t in data if t.get("expires_at", 0) > time.time()]
+            except Exception:
+                existing = []
+        existing.append({"token": token, "expires_at": expires,
+                         "issued": time.strftime("%Y-%m-%dT%H:%M:%S")})
+        TOKENS_PATH.write_text(json.dumps(existing, indent=2), encoding="utf-8")
+        self._token = token
+        self._token_expires_at = expires
+        self.after(0, lambda t=token: (self.token_var.set(t),
+                                       self.copy_btn.configure(state="normal"),
+                                       self._log(f"token issued: {t} (10 min)")))
+
+        # 4. Push to connected devices.
+        self._push_to_connected()
 
     def _push_to_connected(self):
         if not ADB_PATH.exists():
