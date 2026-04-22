@@ -326,9 +326,9 @@ class SessionsApp(tk.Tk):
                                         command=self._open_rotation, width=14)
         rotate_toolbar_btn.pack(side=tk.LEFT, padx=(6, 0))
         Tooltip(rotate_toolbar_btn,
-                "Open the SSH key rotation panel. One-click wizard rotates the key "
-                "used by phone/tablet to connect over SSH, and onboards new devices "
-                "without opening Termux.")
+                "Open the SSH key rotation panel. Three numbered steps: set up a "
+                "device (one-time), rotate the key on the PC (UAC), dispatch rotate-key "
+                "on each connected device.")
         ttk.Label(
             toolbar,
             text="Type a session name (e.g. ses1) in any terminal — PC, SSH, or Termux — to attach.",
@@ -740,81 +740,75 @@ class RotationDialog(tk.Toplevel):
         ttk.Label(row, textvariable=self.status_var,
                   foreground="#888").pack(side=tk.LEFT, padx=10)
 
-        # --- primary one-click wizard button ---
-        primary = ttk.Frame(outer)
-        primary.pack(fill=tk.X, pady=(10, 4))
-        self.wizard_btn = ttk.Button(
-            primary, text="🪄  Rotate everything (one-click wizard)",
-            command=self._start_wizard,
+        # --- Step 1 — one-time device setup ---
+        step1 = ttk.LabelFrame(outer, text=" Step 1 — Set up a device (one-time per device, ever) ")
+        step1.pack(fill=tk.X, pady=(10, 4))
+        ttk.Label(
+            step1, foreground="#9b9b9b", wraplength=660, justify="left",
+            text="Requires: the device plugged in via USB with ADB debugging allowed. "
+                 "Pushes rotate-key.sh + the current private key. Then open Termux on "
+                 "the device and paste this once — it enables headless rotations "
+                 "forever after:",
+        ).pack(anchor="w", padx=8, pady=(6, 2))
+        ttk.Label(
+            step1, foreground=DARK["accent"], font=("Consolas", 10, "bold"),
+            text="    bash /sdcard/rk.sh install",
+        ).pack(anchor="w", padx=8, pady=(0, 4))
+        self.step1_btn = ttk.Button(
+            step1, text="1. Push rotate-key script to connected device(s)",
+            command=self._start_step1,
         )
-        self.wizard_btn.pack(fill=tk.X)
+        self.step1_btn.pack(fill=tk.X, padx=8, pady=(0, 8))
         Tooltip(
-            self.wizard_btn,
-            "First click: generates a new ed25519 keypair, triggers the UAC-gated "
-            "authorized_keys swap, issues a 10-min token, pushes key + script to "
-            "every connected Android device, and runs rotate-key on each.\n\n"
-            "Clicks during the active 10-min window: reuse the current key and "
-            "just onboard any newly-plugged-in devices — no new keypair, no UAC.",
-        )
-        self.wizard_hint = ttk.Label(
-            outer,
-            text=("Generates a new key, swaps authorized_keys (UAC), and for each "
-                  "connected device: pushes the key, installs rotate-key if missing, "
-                  "then runs it — all without opening Termux."),
-            wraplength=660, foreground="#888", justify="left", font=("TkDefaultFont", 8),
-        )
-        self.wizard_hint.pack(anchor="w", pady=(2, 4))
-
-        # --- advanced toggle + (initially-hidden) advanced button row ---
-        self.show_advanced_var = tk.BooleanVar(value=False)
-        self.advanced_toggle = ttk.Checkbutton(
-            outer, text="Show advanced step-by-step controls",
-            variable=self.show_advanced_var, command=self._toggle_advanced,
-        )
-        self.advanced_toggle.pack(anchor="w", pady=(4, 2))
-        Tooltip(
-            self.advanced_toggle,
-            "Reveal or hide the three buttons that expose each wizard step "
-            "individually. Useful when something went wrong and you want to "
-            "redo just one part.",
+            self.step1_btn,
+            "Pushes rotate-key.sh to /sdcard/rk.sh and the current SSH key to "
+            "/sdcard/Download/id_ed25519 on every ADB-connected device. Safe to "
+            "run repeatedly — idempotent.",
         )
 
-        self.actions_frame = ttk.Frame(outer)
-        # Don't pack yet — hidden by default.
-        ttk.Label(self.actions_frame, text="Advanced:", foreground="#777",
-                  font=("TkDefaultFont", 8)).pack(side=tk.LEFT, padx=(0, 6))
+        # --- Step 2 — rotate key ---
+        step2 = ttk.LabelFrame(outer, text=" Step 2 — Rotate the SSH key ")
+        step2.pack(fill=tk.X, pady=(4, 4))
+        ttk.Label(
+            step2, foreground="#9b9b9b", wraplength=660, justify="left",
+            text="Requires: one UAC prompt (accept to replace administrators_authorized_keys). "
+                 "Generates a fresh ed25519 keypair, replaces the public key on Windows, "
+                 "issues a 10-min token, and pushes the new private key to every connected "
+                 "device. Click again within 10 minutes to reuse the current key instead "
+                 "of generating another (useful when cycling through devices).",
+        ).pack(anchor="w", padx=8, pady=(6, 4))
         self.rotate_btn = ttk.Button(
-            self.actions_frame, text="🔑 Rotate keys (UAC)",
-            command=self._start_rotation, width=22,
+            step2, text="2. 🔑 Rotate SSH key (UAC swap + push to connected)",
+            command=self._start_rotation,
         )
-        self.rotate_btn.pack(side=tk.LEFT)
+        self.rotate_btn.pack(fill=tk.X, padx=8, pady=(0, 8))
         Tooltip(
             self.rotate_btn,
-            "Step 1 only: generate a new keypair, swap authorized_keys (UAC), "
-            "issue a token, adb-push the new key to connected devices. Does NOT "
-            "run rotate-key on the devices themselves.",
+            "Full rotation: keygen + UAC swap of authorized_keys + token + push "
+            "new private key to connected ADB devices. Does NOT run rotate-key "
+            "on the devices themselves — that's Step 3.",
         )
-        self.push_btn = ttk.Button(
-            self.actions_frame, text="Push current key",
-            command=self._start_push_current, width=18,
-        )
-        self.push_btn.pack(side=tk.LEFT, padx=(6, 0))
-        Tooltip(
-            self.push_btn,
-            "Push the *current* private key (no rotation) to whatever devices are "
-            "currently connected via ADB. Use when you plug in another device "
-            "during an active session and want it on the same key as the rest.",
-        )
+
+        # --- Step 3 — dispatch rotate-key on devices ---
+        step3 = ttk.LabelFrame(outer, text=" Step 3 — Apply rotation on each device ")
+        step3.pack(fill=tk.X, pady=(4, 4))
+        ttk.Label(
+            step3, foreground="#9b9b9b", wraplength=660, justify="left",
+            text="Requires: Step 1 has been completed on this device at least once. "
+                 "Fires rotate-key over Termux RUN_COMMAND — fully headless, Termux "
+                 "stays closed. If the device hasn't completed Step 1 yet, this will "
+                 "report that; finish Step 1 there first and try again.",
+        ).pack(anchor="w", padx=8, pady=(6, 4))
         self.runkey_btn = ttk.Button(
-            self.actions_frame, text="▶ Run rotate-key on devices",
-            command=self._start_run_rotate, width=28,
+            step3, text="3. ▶ Run rotate-key on connected devices",
+            command=self._start_run_rotate,
         )
-        self.runkey_btn.pack(side=tk.LEFT, padx=(6, 0))
+        self.runkey_btn.pack(fill=tk.X, padx=8, pady=(0, 8))
         Tooltip(
             self.runkey_btn,
-            "Dispatch 'rotate-key' on each connected Android device. Tries the "
-            "headless Termux RUN_COMMAND path first; falls back to bringing "
-            "Termux forward and typing the command via ADB input events.",
+            "Dispatches 'rotate-key' via Termux's RUN_COMMAND intent. Verifies "
+            "success by watching for /sdcard/Download/id_ed25519 to disappear "
+            "(rotate-key consumes it as part of the swap).",
         )
 
         # --- session / token row ---
@@ -840,7 +834,7 @@ class RotationDialog(tk.Toplevel):
         self.stop_btn.pack(side=tk.LEFT, padx=(6, 0))
         Tooltip(
             self.stop_btn,
-            "End the active 10-min rotation session right now. Next wizard click "
+            "End the active 10-min rotation session right now. Next Step 2 click "
             "will generate a fresh keypair and do a full rotation.",
         )
         self.countdown_var = tk.StringVar(value="")
@@ -926,27 +920,13 @@ class RotationDialog(tk.Toplevel):
         finally:
             self.after(0, lambda: self._set_buttons_busy(False))
 
-    def _start_push_current(self):
-        if self._is_busy:
-            return
-        if not SSH_KEY_PATH.exists():
-            self._log("No current key at " + str(SSH_KEY_PATH) + " — rotate first.")
-            return
-        self._set_buttons_busy(True)
-        threading.Thread(target=self._do_push_current, daemon=True).start()
-
-    def _do_push_current(self):
-        try:
-            self._push_to_connected()
-        finally:
-            self.after(0, lambda: self._set_buttons_busy(False))
-
     def _start_run_rotate(self):
-        """Brings Termux to the foreground on each connected device and types
-        `rotate-key\\n` via ADB input events. No Termux config change needed."""
+        """Fire rotate-key on each connected device via Termux's RUN_COMMAND
+        intent. Headless; requires the device to have completed Step 1."""
         if self._is_busy:
             return
         self._set_buttons_busy(True)
+        self._log("=== Step 3: running rotate-key on connected devices ===")
         threading.Thread(target=self._do_run_rotate, daemon=True).start()
 
     def _do_run_rotate(self):
@@ -954,14 +934,17 @@ class RotationDialog(tk.Toplevel):
             if not ADB_PATH.exists():
                 self.after(0, lambda: self._log(f"adb not found at {ADB_PATH}"))
                 return
-            ok, out = _run([str(ADB_PATH), "devices"])
+            _, out = _run([str(ADB_PATH), "devices"])
             devices = [line.split("\t", 1)[0].strip()
                        for line in out.splitlines() if "\tdevice" in line]
             if not devices:
-                self.after(0, lambda: self._log("no connected devices"))
+                self.after(0, lambda: self._log(
+                    "No ADB devices connected; plug one in and click again."))
                 return
             for dev in devices:
-                # 1. Verify Termux is installed on the device.
+                self.after(0, lambda d=dev: self._log(f"--- {d} ---"))
+
+                # Verify Termux is installed.
                 _, pmout = _run([str(ADB_PATH), "-s", dev, "shell",
                                  "pm", "list", "packages", "com.termux"], timeout=5)
                 if "package:com.termux" not in pmout:
@@ -969,12 +952,10 @@ class RotationDialog(tk.Toplevel):
                         f"  ✗ {d}: Termux is not installed"))
                     continue
 
-                # 2. Try Termux RUN_COMMAND intent — headless, no UI needed.
-                # Requires allow-external-apps=true in ~/.termux/termux.properties
-                # (which `rotate-key install` sets up automatically).
+                # Fire the RUN_COMMAND intent.
                 self.after(0, lambda d=dev: self._log(
-                    f"{d}: dispatching rotate-key via Termux RUN_COMMAND (headless)"))
-                _ok, intent_out = _run([
+                    f"  dispatching rotate-key via Termux RUN_COMMAND ..."))
+                _run([
                     str(ADB_PATH), "-s", dev, "shell",
                     "am", "startservice", "--user", "0",
                     "-n", "com.termux/com.termux.app.RunCommandService",
@@ -983,26 +964,32 @@ class RotationDialog(tk.Toplevel):
                     "/data/data/com.termux/files/home/rotate-key.sh",
                     "--ez", "com.termux.RUN_COMMAND_BACKGROUND", "true",
                 ], timeout=6)
-                intent_ok = _ok and "Starting service" in intent_out and \
-                            "Error" not in intent_out
-                if intent_ok:
-                    self.after(0, lambda d=dev: self._log(
-                        f"  ✓ {d}: rotate-key running headlessly in Termux"))
-                    continue
 
-                # 3. Fallback: bring Termux forward and type the command.
-                self.after(0, lambda d=dev: self._log(
-                    f"  RUN_COMMAND not accepted on {d} — falling back to UI typing."))
-                _run([str(ADB_PATH), "-s", dev, "shell", "am", "start",
-                      "-n", "com.termux/.HomeActivity"], timeout=5)
-                time.sleep(0.7)
-                _run([str(ADB_PATH), "-s", dev, "shell", "input", "text",
-                      "rotate-key"], timeout=5)
-                time.sleep(0.15)
-                _run([str(ADB_PATH), "-s", dev, "shell", "input", "keyevent",
-                      "66"], timeout=5)
-                self.after(0, lambda d=dev: self._log(
-                    f"  ✓ {d}: rotate-key typed into Termux — watch the device"))
+                # Confirm by watching the pushed key file being consumed.
+                headless_ok = False
+                for _ in range(5):
+                    time.sleep(1.0)
+                    _, lsout = _run([str(ADB_PATH), "-s", dev, "shell",
+                                     "ls", "/sdcard/Download/id_ed25519"], timeout=5)
+                    if "No such file" in lsout or "does not exist" in lsout:
+                        headless_ok = True
+                        break
+
+                if headless_ok:
+                    self.after(0, lambda d=dev: self._log(
+                        f"  ✓ {d}: rotate-key ran headlessly (key consumed, SSH up)"))
+                    self._post_android_toast(dev, "SSH rotated",
+                                             "rotate-key completed headlessly")
+                else:
+                    self.after(0, lambda d=dev: self._log(
+                        f"  ⚠ {d}: dispatch didn't complete in 5s. "
+                        f"Step 1 ('bash /sdcard/rk.sh install') probably hasn't "
+                        f"been run on this device yet. Do Step 1 first, then "
+                        f"retry Step 3."))
+                    self._post_android_toast(
+                        dev, "Rotation needs Step 1",
+                        "Open Termux, run: bash /sdcard/rk.sh install",
+                    )
         finally:
             self.after(0, lambda: self._set_buttons_busy(False))
 
@@ -1010,9 +997,8 @@ class RotationDialog(tk.Toplevel):
         self._is_busy = busy
         state = "disabled" if busy else "normal"
         self.rotate_btn.configure(state=state)
-        self.push_btn.configure(state=state)
         self.runkey_btn.configure(state=state)
-        self.wizard_btn.configure(state=state)
+        self.step1_btn.configure(state=state)
         # stop_btn enabled state is driven by session state, not busy state,
         # so leave it alone here (but disable it entirely while busy to prevent
         # mid-operation cancellation).
@@ -1025,9 +1011,64 @@ class RotationDialog(tk.Toplevel):
     def _is_session_active(self) -> bool:
         return bool(self._token) and self._token_expires_at > time.time()
 
+    # ---- Step 1: push rotate-key.sh (+ current key) to connected devices ----
+
+    def _start_step1(self):
+        if self._is_busy:
+            return
+        if not ROTATE_KEY_SH.exists():
+            self._log(f"ERROR: {ROTATE_KEY_SH} is missing")
+            return
+        self._set_buttons_busy(True)
+        self._log("=== Step 1: pushing rotate-key script to connected devices ===")
+        threading.Thread(target=self._do_step1, daemon=True).start()
+
+    def _do_step1(self):
+        try:
+            if not ADB_PATH.exists():
+                self.after(0, lambda: self._log(f"adb not found at {ADB_PATH}"))
+                return
+            _, listout = _run([str(ADB_PATH), "devices"])
+            devices = [line.split("\t", 1)[0].strip()
+                       for line in listout.splitlines() if "\tdevice" in line]
+            if not devices:
+                self.after(0, lambda: self._log(
+                    "No ADB devices connected. Plug a device in via USB (with "
+                    "USB debugging allowed) and click again."))
+                return
+            for dev in devices:
+                self.after(0, lambda d=dev: self._log(f"--- {d} ---"))
+                # Check Termux installed.
+                _, pm = _run([str(ADB_PATH), "-s", dev, "shell",
+                              "pm", "list", "packages", "com.termux"], timeout=5)
+                if "package:com.termux" not in pm:
+                    self.after(0, lambda d=dev: self._log(
+                        f"  ✗ Termux NOT installed on {d}; install it first."))
+                    continue
+                # Push the script to both the short path and the self-update slot.
+                ok1, _ = _run([str(ADB_PATH), "-s", dev, "push",
+                               str(ROTATE_KEY_SH), "/sdcard/rk.sh"], timeout=10)
+                ok2, _ = _run([str(ADB_PATH), "-s", dev, "push",
+                               str(ROTATE_KEY_SH), "/sdcard/Download/rotate-key.sh"], timeout=10)
+                # Also push the current key if we have one.
+                key_pushed = False
+                if SSH_KEY_PATH.exists():
+                    ok3, _ = _run([str(ADB_PATH), "-s", dev, "push",
+                                   str(SSH_KEY_PATH), "/sdcard/Download/id_ed25519"], timeout=10)
+                    key_pushed = ok3
+                if ok1 and ok2:
+                    self.after(0, lambda d=dev, kp=key_pushed: self._log(
+                        f"  ✓ {d}: script pushed"
+                        f"{' + current key' if kp else ''}. "
+                        f"Now in Termux on that device, paste:  bash /sdcard/rk.sh install"))
+                else:
+                    self.after(0, lambda d=dev: self._log(f"  ✗ {d}: push failed"))
+        finally:
+            self.after(0, lambda: self._set_buttons_busy(False))
+
     def _stop_session(self):
         """End the current rotation window early. Invalidates the token so the
-        next wizard click starts fresh (keygen + UAC)."""
+        next Step 2 click starts fresh (keygen + UAC)."""
         self._token = None
         self._token_expires_at = 0
         self.token_var.set("(no active session)")
@@ -1039,140 +1080,8 @@ class RotationDialog(tk.Toplevel):
             TOKENS_PATH.unlink(missing_ok=True)
         except Exception:
             pass
-        self._log("Rotation session ended — next wizard click will generate a new key.")
+        self._log("Rotation session ended — next Step 2 click will generate a new key.")
         self._set_status("Session ended.")
-
-    def _toggle_advanced(self):
-        if self.show_advanced_var.get():
-            self.actions_frame.pack(fill=tk.X, pady=(4, 6),
-                                    before=self.token_entry.master.master)
-        else:
-            self.actions_frame.pack_forget()
-
-    # ---- one-click wizard ----
-
-    def _start_wizard(self):
-        if self._is_busy:
-            return
-        if not SWAP_PS1.exists() or not ROTATE_KEY_SH.exists():
-            self._log(f"ERROR: missing helpers (need {SWAP_PS1.name}, {ROTATE_KEY_SH.name})")
-            return
-        self._set_buttons_busy(True)
-        self._log("=== Starting one-click rotate-all wizard ===")
-        threading.Thread(target=self._do_wizard, daemon=True).start()
-
-    def _do_wizard(self):
-        try:
-            # Step 1: if there's an active session (token not yet expired),
-            # reuse the current key. Otherwise do a full rotation.
-            if self._is_session_active():
-                self.after(0, lambda: self._log(
-                    "Active rotation session — reusing current key and "
-                    "onboarding newly-connected devices (no new keypair, no UAC)."))
-                self._push_to_connected()
-            else:
-                self._do_rotation_inner()
-
-            # Step 2: onboard each connected device (install + run rotate-key).
-            if not ADB_PATH.exists():
-                self.after(0, lambda: self._log(
-                    "adb not found — skipping per-device setup"))
-                return
-            _, listout = _run([str(ADB_PATH), "devices"])
-            devices = [line.split("\t", 1)[0].strip()
-                       for line in listout.splitlines() if "\tdevice" in line]
-            if not devices:
-                self.after(0, lambda: self._log(
-                    "No ADB devices connected; skipping per-device steps. "
-                    "Plug one in and click the wizard button again."))
-                return
-            for dev in devices:
-                self._wizard_onboard_device(dev)
-
-            self.after(0, lambda: self._set_status("Wizard complete."))
-            self.after(0, lambda: self._log("=== Wizard complete ==="))
-        except Exception as e:
-            self.after(0, lambda m=str(e): self._log(f"ERROR: {m}"))
-        finally:
-            self.after(0, lambda: self._set_buttons_busy(False))
-
-    def _wizard_onboard_device(self, dev: str):
-        """Full setup-and-rotate for one device:
-          1. Push rotate-key.sh and ssh_key.
-          2. Try headless RUN_COMMAND. Verify success by observing that the
-             pushed key file got consumed (rotate-key removes it on swap).
-          3. Fall back to Termux-UI typing. Verify Termux actually is foreground
-             first; abort with a clear message if not.
-        """
-        self.after(0, lambda d=dev: self._log(f"--- device {d} ---"))
-
-        # Check Termux is installed.
-        _, pmout = _run([str(ADB_PATH), "-s", dev, "shell",
-                         "pm", "list", "packages", "com.termux"], timeout=5)
-        if "package:com.termux" not in pmout:
-            self.after(0, lambda d=dev: self._log(
-                f"  ✗ Termux is NOT installed on {d}; install it from Play Store/F-Droid."))
-            return
-
-        # Push both the script (for self-update / bootstrap) and re-push the key
-        # in case the previous push was consumed by an earlier rotate-key run.
-        _run([str(ADB_PATH), "-s", dev, "push", str(ROTATE_KEY_SH),
-              "/sdcard/rk.sh"], timeout=10)
-        _run([str(ADB_PATH), "-s", dev, "push", str(ROTATE_KEY_SH),
-              "/sdcard/Download/rotate-key.sh"], timeout=10)
-        _run([str(ADB_PATH), "-s", dev, "push", str(SSH_KEY_PATH),
-              "/sdcard/Download/id_ed25519"], timeout=10)
-
-        # Try the headless RUN_COMMAND path first.
-        self.after(0, lambda d=dev: self._log(
-            f"  dispatching rotate-key via Termux RUN_COMMAND ..."))
-        _run([
-            str(ADB_PATH), "-s", dev, "shell",
-            "am", "startservice", "--user", "0",
-            "-n", "com.termux/com.termux.app.RunCommandService",
-            "-a", "com.termux.RUN_COMMAND",
-            "--es", "com.termux.RUN_COMMAND_PATH",
-            "/data/data/com.termux/files/home/rotate-key.sh",
-            "--ez", "com.termux.RUN_COMMAND_BACKGROUND", "true",
-        ], timeout=6)
-
-        # Verify RUN_COMMAND actually ran the script: rotate-key consumes the
-        # key file as part of its swap, so a few seconds later it should be gone.
-        headless_ok = False
-        for _ in range(5):
-            time.sleep(1.0)
-            _, lsout = _run([str(ADB_PATH), "-s", dev, "shell",
-                             "ls", "/sdcard/Download/id_ed25519"], timeout=5)
-            if "No such file" in lsout or "does not exist" in lsout:
-                headless_ok = True
-                break
-
-        if headless_ok:
-            self.after(0, lambda d=dev: self._log(
-                f"  ✓ {d}: rotate-key ran headlessly (key consumed; SSH should be up)"))
-            self._post_android_toast(dev, "SSH rotated",
-                                     "rotate-key completed headlessly")
-            return
-
-        # Headless didn't work — almost always because allow-external-apps=true
-        # isn't set in this device's Termux config yet (first-time setup).
-        # Android sandboxing prevents us from writing that config from outside,
-        # so we stop guessing and give the user a clear one-time instruction.
-        self.after(0, lambda d=dev: self._log(
-            f"  ⚠ {d}: headless dispatch didn't complete in 5s."))
-        self.after(0, lambda d=dev: self._log(
-            f"  Most likely cause: Termux's allow-external-apps=true hasn't "
-            f"been set yet on this device. Fix once, forever:"))
-        self.after(0, lambda d=dev: self._log(
-            f"    1) Open Termux on {d}"))
-        self.after(0, lambda d=dev: self._log(
-            f"    2) Paste:   bash /sdcard/rk.sh install"))
-        self.after(0, lambda d=dev: self._log(
-            f"    3) Click this wizard again — from now on it'll be fully headless."))
-        self._post_android_toast(
-            dev, "STT rotation needs one-time setup",
-            "Open Termux and run: bash /sdcard/rk.sh install",
-        )
 
     def _post_android_toast(self, dev: str, title: str, msg: str):
         """Post a native Android notification on the device (visible even if
@@ -1190,7 +1099,7 @@ class RotationDialog(tk.Toplevel):
             pass
 
     def _do_rotation_inner(self):
-        """Shared body for 'Rotate keys' and the wizard — keygen + swap + token + push."""
+        """Keygen + UAC swap of authorized_keys + token + push new key to connected."""
         # 1. Generate new ed25519 keypair.
         self.after(0, lambda: self._set_status("Generating new keypair..."))
         if SSH_PUB_PATH.exists():
@@ -1293,7 +1202,7 @@ class RotationDialog(tk.Toplevel):
                 m, s = divmod(remaining, 60)
                 self.countdown_var.set(
                     f"Session active — token expires in {m}:{s:02d}. "
-                    f"Wizard re-clicks reuse this key.")
+                    f"Step 2 re-clicks within this window reuse this key (no new keygen).")
                 if not self._is_busy:
                     self.stop_btn.configure(state="normal")
             else:
