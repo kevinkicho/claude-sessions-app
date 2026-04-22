@@ -52,15 +52,15 @@ Under the hood:
 - Per-row Launch button opens that session in a new console window
 - All options persist to `sessions.json`
 - Works alongside Windows and WSL Claude installs, sharing memory via symlink
-- **SSH key rotation panel** — one-click rotation of the SSH key used by your Android devices, with ADB push + headless Termux invocation
+- **SSH key rotation panel** — rotation of the SSH key used by your Android devices, with ADB push from the PC and a one-word command on each device
 
 ## SSH key rotation panel
 
-Click **🔑 Rotate SSH** in the toolbar to open a dialog that drives the whole key-rotation flow. Three action buttons:
+Click **🔑 Rotate SSH** in the toolbar to open a dialog that drives the whole key-rotation flow. Two PC-side buttons + one device-side step:
 
-- **🔑 Rotate keys (UAC)** — generates a new ed25519 keypair locally, triggers one UAC prompt to replace `C:\ProgramData\ssh\administrators_authorized_keys`, issues a 10-minute rotation token, and adb-pushes the new private key to every connected Android device at `/sdcard/Download/id_ed25519`.
-- **Push current key** — re-push the existing key to connected devices without rotating. Handy for rolling an additional device onto an already-current key (common when you only have one USB port and need to hit multiple devices sequentially).
-- **▶ Run rotate-key on devices** — fires Termux's `RUN_COMMAND` service intent via ADB so each device runs its `rotate-key` script **headlessly — Termux doesn't need to be open**. Falls back to UI-level input events (bringing Termux forward and typing `rotate-key`) if the intent isn't accepted.
+- **Step 1 — Push rotate-key script to connected device(s)** — ADB-pushes `rotate-key.sh` to `/sdcard/rk.sh` and the current private key to `/sdcard/Download/id_ed25519` on every connected device. Idempotent — safe to re-run.
+- **Step 2 — 🔑 Rotate SSH key (UAC swap + push to connected)** — generates a new ed25519 keypair locally, triggers one UAC prompt to replace `C:\ProgramData\ssh\administrators_authorized_keys`, issues a 10-minute rotation token, and adb-pushes the new private key to every connected Android device.
+- **Step 3 — on each device** — close Termux (swipe out of Recents), reopen it, and type `rotate-key`. This can't be automated from the PC because Android blocks ADB from holding Termux's `RUN_COMMAND` permission; see [Why no "Run rotate-key" button?](#why-no-run-rotate-key-button) below.
 
 The dialog also shows:
 
@@ -70,19 +70,24 @@ The dialog also shows:
 
 ### Device-side `rotate-key`
 
-Each Android device needs the `rotate-key` Termux command installed once. The installer enables Termux's `allow-external-apps` config so the GUI's headless button actually works. One-time bootstrap:
+Each Android device needs the `rotate-key` Termux command installed once. One-time bootstrap, run inside Termux after clicking Step 1 on the PC:
 
 ```
+termux-setup-storage
 bash /sdcard/rk.sh install
 ```
 
-(The GUI and `rotate-ssh.bat` push `rotate-key.sh` to `/sdcard/rk.sh` during rotation.) After install, every future rotation is:
+(The GUI's Step 1 button pushes `rotate-key.sh` to `/sdcard/rk.sh`; `termux-setup-storage` lets Termux actually read that file.) After install, every future rotation is:
 
 ```
 rotate-key
 ```
 
-…or zero typing at all, via the **▶ Run rotate-key on devices** button. The script self-updates from `/sdcard/Download/rotate-key.sh` on every run, so PC-side script improvements propagate automatically without a re-install.
+The script self-updates from `/sdcard/Download/rotate-key.sh` on every run, so PC-side script improvements propagate automatically without a re-install.
+
+### Why no "Run rotate-key" button?
+
+An earlier version of the panel had a third button that dispatched `rotate-key` via Termux's `RUN_COMMAND` intent, aiming for fully headless rotation. It was removed because it can't work reliably on stock Android: the `RUN_COMMAND` intent requires the caller to hold `com.termux.permission.RUN_COMMAND`, and the ADB shell user (`com.android.shell`) can't request or be granted that permission, so Android always rejects the dispatch. The button's "failed" messages were misleading (it kept claiming Step 1 wasn't done when it actually was). Typing `rotate-key` once in Termux is the honest path.
 
 ### Files that ship with rotation
 
@@ -103,7 +108,7 @@ The private key, public key, token state, and rotation logs are kept outside the
 - OpenSSH Server (Windows optional feature)
 
 **Android device (phone or tablet):**
-- Termux (from Google Play Store or F-Droid)
+- Termux — install from [F-Droid](https://f-droid.org/packages/com.termux/) or [GitHub releases](https://github.com/termux/termux-app/releases), **not the Play Store**. The Play Store build is deprecated (last updated 2020), ships with stale packages, and `pkg install` / `pkg update` against it often fails.
 - Termux's `openssh` package
 
 **Shared transport:**
@@ -210,7 +215,7 @@ Optionally create a Desktop shortcut that points at `pythonw.exe` with the scrip
 
 ### Part C — Android setup (per device)
 
-1. **Install Termux from Google Play Store** (or F-Droid). Open it, agree to the startup message.
+1. **Install Termux from [F-Droid](https://f-droid.org/packages/com.termux/) or [GitHub releases](https://github.com/termux/termux-app/releases)** — **not the Play Store** (that build is deprecated; `pkg update` fails against its frozen repos). If you already have the Play Store version, uninstall it first (signatures differ, so you can't upgrade in place). Open Termux once, agree to the startup message, and let the bootstrap finish.
 
 2. **Install OpenSSH in Termux:**
 

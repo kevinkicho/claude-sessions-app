@@ -746,10 +746,14 @@ class RotationDialog(tk.Toplevel):
         step1.pack(fill=tk.X, pady=(10, 4))
         ttk.Label(
             step1, foreground="#9b9b9b", wraplength=660, justify="left",
-            text="Requires: device plugged in via USB with ADB debugging allowed, "
-                 "AND Termux has been granted storage access on the device (open "
-                 "Termux once and run  termux-setup-storage  — accept the prompt). "
-                 "Without that, Termux can't read /sdcard/rk.sh.",
+            text="Requires: (a) device plugged in via USB with ADB debugging "
+                 "allowed; (b) Termux installed from F-Droid or GitHub "
+                 "(f-droid.org/packages/com.termux or github.com/termux/"
+                 "termux-app/releases) — NOT the Play Store build, which is "
+                 "deprecated and ships with stale packages; (c) Termux has "
+                 "been granted storage access on the device (open Termux once "
+                 "and run  termux-setup-storage  — accept the prompt). Without "
+                 "that, Termux can't read /sdcard/rk.sh.",
         ).pack(anchor="w", padx=8, pady=(6, 2))
         ttk.Label(
             step1, foreground="#d9d9d9", wraplength=660, justify="left",
