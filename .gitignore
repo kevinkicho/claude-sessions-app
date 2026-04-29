@@ -23,3 +23,7 @@ ssh_key.pub*
 rotation-tokens.json
 *.log
 tools/
+
+# Per-machine session list — leaks project folder paths and username if committed.
+# sessions.example.json is the template that ships with the repo.
+sessions.json

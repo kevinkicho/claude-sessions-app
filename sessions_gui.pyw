@@ -323,6 +323,13 @@ class SessionsApp(tk.Tk):
         toolbar = ttk.Frame(self, padding=(16, 10, 16, 4))
         toolbar.pack(fill=tk.X)
         ttk.Button(toolbar, text="?  Help", command=self._show_help, width=10).pack(side=tk.LEFT)
+        diagnose_btn = ttk.Button(toolbar, text="🔧 Diagnose",
+                                  command=self._open_diagnostics, width=12)
+        diagnose_btn.pack(side=tk.LEFT, padx=(6, 0))
+        Tooltip(diagnose_btn,
+                "Run a self-check of every prerequisite (WSL, Ubuntu, tmux, claude, "
+                "klaud, PATH, sessions, OpenSSH, authorized_keys, Tailscale, ADB). "
+                "Shows a fix hint for anything missing.")
         rotate_toolbar_btn = ttk.Button(toolbar, text="🔑 Rotate SSH",
                                         command=self._open_rotation, width=14)
         rotate_toolbar_btn.pack(side=tk.LEFT, padx=(6, 0))
@@ -583,6 +590,9 @@ class SessionsApp(tk.Tk):
 
     def _open_rotation(self):
         RotationDialog(self)
+
+    def _open_diagnostics(self):
+        DiagnosticsDialog(self)
 
     def _show_help(self):
         win = tk.Toplevel(self)
@@ -1181,6 +1191,348 @@ class RotationDialog(tk.Toplevel):
                 try: TOKENS_PATH.unlink(missing_ok=True)
                 except Exception: pass
         self.after(1000, self._tick)
+
+
+DIAG_ICON = {"ok": "✓", "warn": "⚠", "fail": "✗", "info": "ℹ"}
+DIAG_COLOR = {
+    "ok":   "#7ee787",   # green
+    "warn": "#f9c74f",   # amber
+    "fail": DARK["danger"],
+    "info": DARK["fg_mute"],
+}
+
+
+class DiagnosticsDialog(tk.Toplevel):
+    """Self-check window. Runs every prerequisite check in a background thread
+    and reports ✓/⚠/✗ with a one-line fix hint."""
+
+    def __init__(self, parent: tk.Misc):
+        super().__init__(parent)
+        self.title("Self-Diagnose")
+        self.geometry("780x620")
+        self.minsize(620, 480)
+        self.configure(bg=DARK["bg"])
+        apply_dark_title_bar(self)
+        self._is_running = False
+        self._build_ui()
+        self.after(100, self._run_all)
+
+    def _build_ui(self):
+        outer = ttk.Frame(self, padding=14)
+        outer.pack(fill=tk.BOTH, expand=True)
+        ttk.Label(outer, text="Self-Diagnose",
+                  font=("TkDefaultFont", 13, "bold")).pack(anchor="w")
+        ttk.Label(
+            outer,
+            text=("Checks every prerequisite for Claude Sessions on this PC. "
+                  "Green = ok, amber = warning (works but degraded), red = "
+                  "blocking. Each failure includes a one-line fix hint."),
+            wraplength=720, justify="left", foreground="#aaa",
+        ).pack(anchor="w", pady=(4, 8))
+
+        self.summary_var = tk.StringVar(value="Running checks…")
+        ttk.Label(outer, textvariable=self.summary_var,
+                  font=("TkDefaultFont", 10, "bold")).pack(anchor="w", pady=(0, 6))
+
+        results_frame = ttk.Frame(outer)
+        results_frame.pack(fill=tk.BOTH, expand=True)
+        self.results = tk.Text(
+            results_frame, bg=DARK["surface"], fg=DARK["fg"],
+            insertbackground=DARK["fg"], selectbackground=DARK["accent"],
+            relief="flat", borderwidth=0, highlightthickness=0,
+            wrap="word", font=("Consolas", 10),
+        )
+        scroll = ttk.Scrollbar(results_frame, orient="vertical",
+                               command=self.results.yview)
+        self.results.configure(yscrollcommand=scroll.set)
+        self.results.pack(side="left", fill="both", expand=True)
+        scroll.pack(side="right", fill="y")
+        for level, color in DIAG_COLOR.items():
+            self.results.tag_configure(level, foreground=color,
+                                       font=("Consolas", 10, "bold"))
+        self.results.tag_configure("name", foreground=DARK["fg"],
+                                   font=("Consolas", 10, "bold"))
+        self.results.tag_configure("detail", foreground=DARK["fg_mute"])
+        self.results.tag_configure("fix", foreground=DARK["accent"])
+        self.results.configure(state="disabled")
+
+        footer = ttk.Frame(outer)
+        footer.pack(fill=tk.X, pady=(10, 0))
+        self.recheck_btn = ttk.Button(footer, text="Re-check",
+                                      command=self._run_all, width=12)
+        self.recheck_btn.pack(side=tk.LEFT)
+        Tooltip(self.recheck_btn, "Run every check again from scratch.")
+        self.copy_btn = ttk.Button(footer, text="Copy log",
+                                   command=self._copy_log, width=12)
+        self.copy_btn.pack(side=tk.LEFT, padx=(6, 0))
+        Tooltip(self.copy_btn, "Copy the full diagnostic output to the clipboard.")
+        ttk.Button(footer, text="Close", command=self.destroy,
+                   width=10).pack(side=tk.RIGHT)
+
+    def _append(self, level: str, name: str, detail: str, fix: str | None = None):
+        icon = DIAG_ICON.get(level, "•")
+        self.results.configure(state="normal")
+        self.results.insert("end", f"{icon}  ", level)
+        self.results.insert("end", f"{name}\n", "name")
+        if detail:
+            self.results.insert("end", f"     {detail}\n", "detail")
+        if fix:
+            self.results.insert("end", f"     Fix: {fix}\n", "fix")
+        self.results.insert("end", "\n")
+        self.results.see("end")
+        self.results.configure(state="disabled")
+
+    def _clear(self):
+        self.results.configure(state="normal")
+        self.results.delete("1.0", "end")
+        self.results.configure(state="disabled")
+
+    def _copy_log(self):
+        text = self.results.get("1.0", "end").strip()
+        if not text:
+            return
+        try:
+            self.clipboard_clear()
+            self.clipboard_append(text)
+            self.summary_var.set(self.summary_var.get() + "  (log copied)")
+        except Exception:
+            pass
+
+    def _run_all(self):
+        if self._is_running:
+            return
+        self._is_running = True
+        self.recheck_btn.configure(state="disabled")
+        self.summary_var.set("Running checks…")
+        self._clear()
+        threading.Thread(target=self._run_all_inner, daemon=True).start()
+
+    def _run_all_inner(self):
+        levels: list[str] = []
+
+        def add(level: str, name: str, detail: str, fix: str | None = None):
+            levels.append(level)
+            self.after(0, lambda: self._append(level, name, detail, fix))
+
+        # 1. Python version
+        v = sys.version_info
+        if v >= (3, 10):
+            add("ok", "Python ≥ 3.10",
+                f"running {v.major}.{v.minor}.{v.micro}")
+        else:
+            add("fail", "Python ≥ 3.10",
+                f"running {v.major}.{v.minor}.{v.micro}",
+                "Install Python 3.10 or newer from python.org")
+
+        # 2. sv-ttk
+        if HAS_SV_TTK:
+            add("ok", "sv-ttk installed", "dark theme available")
+        else:
+            add("warn", "sv-ttk installed",
+                "GUI runs without it but won't be themed",
+                "pip install sv-ttk")
+
+        # 3. WSL + Ubuntu reachable (combined — fastest sanity check)
+        ok, out = _run(["wsl", "-d", "Ubuntu", "--", "echo", "ok"], timeout=15)
+        wsl_ok = ok and "ok" in out
+        if wsl_ok:
+            add("ok", "WSL + Ubuntu reachable",
+                "wsl -d Ubuntu responds")
+        else:
+            add("fail", "WSL + Ubuntu reachable",
+                (out.strip() or "no output")[:200],
+                "wsl --install -d Ubuntu  (in elevated PowerShell)")
+
+        # 4. tmux in WSL
+        if wsl_ok:
+            ok, out = _run(["wsl", "-d", "Ubuntu", "--", "which", "tmux"],
+                           timeout=10)
+            if ok and out.strip():
+                add("ok", "tmux installed in Ubuntu", out.strip())
+            else:
+                add("fail", "tmux installed in Ubuntu", "not found",
+                    "wsl -d Ubuntu -- sudo apt install -y tmux")
+        else:
+            add("info", "tmux installed in Ubuntu",
+                "skipped — WSL/Ubuntu not reachable")
+
+        # 5. claude CLI in WSL
+        if wsl_ok:
+            ok, out = _run(["wsl", "-d", "Ubuntu", "--", "which", "claude"],
+                           timeout=10)
+            if ok and out.strip():
+                add("ok", "claude CLI installed in Ubuntu", out.strip())
+            else:
+                add("fail", "claude CLI installed in Ubuntu", "not found",
+                    "wsl -d Ubuntu -- sudo npm install -g @anthropic-ai/claude-code")
+        else:
+            add("info", "claude CLI installed in Ubuntu",
+                "skipped — WSL/Ubuntu not reachable")
+
+        # 6. klaud function
+        if wsl_ok:
+            ok, out = _run(
+                ["wsl", "-d", "Ubuntu", "--", "bash", "-ic", "type klaud"],
+                timeout=10,
+            )
+            if ok and ("function" in out or "klaud is" in out):
+                add("ok", "klaud function defined in WSL",
+                    "found in interactive shell")
+            else:
+                add("warn", "klaud function defined in WSL",
+                    "not found in ~/.bashrc",
+                    "Add the klaud() function — see README §Setup Part A step 3")
+        else:
+            add("info", "klaud function defined in WSL",
+                "skipped — WSL/Ubuntu not reachable")
+
+        # 7. WRAPPER_DIR exists
+        if WRAPPER_DIR.exists():
+            add("ok", "Wrapper directory exists", str(WRAPPER_DIR))
+        else:
+            add("warn", "Wrapper directory exists",
+                f"{WRAPPER_DIR} missing",
+                "Will be created on first Save — but make sure it's on PATH")
+
+        # 8. WRAPPER_DIR on PATH
+        path_env = os.environ.get("PATH", "")
+        on_path = False
+        try:
+            wrapper_resolved = WRAPPER_DIR.resolve()
+            for p in path_env.split(";"):
+                p = p.strip()
+                if not p:
+                    continue
+                try:
+                    if Path(p).resolve() == wrapper_resolved:
+                        on_path = True
+                        break
+                except Exception:
+                    continue
+        except Exception:
+            pass
+        if on_path:
+            add("ok", "Wrapper directory on PATH",
+                "sesN commands will resolve in any terminal")
+        else:
+            add("fail", "Wrapper directory on PATH",
+                f"{WRAPPER_DIR} not in PATH — typing ses1 won't work",
+                "Add it via System Properties → Environment Variables, "
+                "then reopen terminals")
+
+        # 9. sessions.json valid
+        cfg: dict = {}
+        if CONFIG_PATH.exists():
+            try:
+                cfg = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+                add("ok", "sessions.json valid",
+                    f"{len(cfg)} session(s) configured")
+            except Exception as e:
+                add("fail", "sessions.json valid", f"parse error: {e}",
+                    "Delete sessions.json and re-save from the GUI")
+        else:
+            add("info", "sessions.json",
+                "not yet — will be created on first Save")
+
+        # 10. Per-session folder + wrapper
+        for name in sorted(cfg.keys(), key=_ses_num):
+            info = cfg[name]
+            folder = (info.get("folder") or "").strip()
+            wrapper = WRAPPER_DIR / f"{name}.cmd"
+            issues = []
+            if not folder:
+                issues.append("no folder set")
+            elif not Path(folder).exists():
+                issues.append(f"folder missing: {folder}")
+            if not wrapper.exists():
+                issues.append(f"wrapper missing: {wrapper.name}")
+            if issues:
+                add("warn", f"Session {name}", "; ".join(issues),
+                    "Open the row, fix the folder, click Save")
+            else:
+                add("ok", f"Session {name}", folder)
+
+        # 11. OpenSSH Server
+        ok, out = _run(
+            ["powershell", "-NoProfile", "-Command",
+             "(Get-Service sshd -ErrorAction SilentlyContinue).Status"],
+            timeout=10,
+        )
+        status = (out or "").strip()
+        if "Running" in status:
+            add("ok", "OpenSSH Server running",
+                "phones can SSH in to this PC")
+        elif status:
+            add("warn", "OpenSSH Server running",
+                f"service status: {status}",
+                "Start-Service sshd  (in elevated PowerShell)")
+        else:
+            add("warn", "OpenSSH Server installed",
+                "service not found",
+                "Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0")
+
+        # 12. authorized_keys (admin or user)
+        admin_keys = Path(r"C:\ProgramData\ssh\administrators_authorized_keys")
+        user_keys = Path.home() / ".ssh" / "authorized_keys"
+        try:
+            if admin_keys.exists():
+                try:
+                    raw = admin_keys.read_text(encoding="utf-8").strip()
+                    keys = [l for l in raw.splitlines()
+                            if l.strip() and not l.startswith("#")]
+                    if keys:
+                        add("ok", "Admin authorized_keys configured",
+                            f"{len(keys)} key(s) in {admin_keys.name}")
+                    else:
+                        add("warn", "Admin authorized_keys configured",
+                            "file exists but is empty",
+                            "See README §Part C step 6 to add a phone's pubkey")
+                except PermissionError:
+                    add("info", "Admin authorized_keys",
+                        "exists but unreadable (normal — admin file)")
+            elif user_keys.exists():
+                add("info", "User authorized_keys present", str(user_keys))
+            else:
+                add("warn", "authorized_keys configured",
+                    "neither admin nor user keys file found",
+                    "Add your phone's pubkey — README §Part C step 6")
+        except Exception as e:
+            add("info", "authorized_keys", f"check skipped: {e}")
+
+        # 13. Tailscale (info)
+        ok, out = _run(
+            ["powershell", "-NoProfile", "-Command",
+             "(Get-Service Tailscale -ErrorAction SilentlyContinue).Status"],
+            timeout=8,
+        )
+        ts_status = (out or "").strip()
+        if "Running" in ts_status:
+            add("info", "Tailscale running",
+                "available for remote phone access")
+        else:
+            add("info", "Tailscale",
+                "service not detected (optional — only needed for remote access)")
+
+        # 14. ADB (info — only matters for rotation panel)
+        if ADB_PATH.exists():
+            add("info", "ADB found", str(ADB_PATH))
+        else:
+            add("info", "ADB",
+                f"not at {ADB_PATH} (optional — only needed for SSH key rotation)")
+
+        # Summary
+        n_fail = sum(1 for r in levels if r == "fail")
+        n_warn = sum(1 for r in levels if r == "warn")
+        n_ok = sum(1 for r in levels if r == "ok")
+        if n_fail:
+            summary = f"✗  {n_fail} failed, {n_warn} warning(s), {n_ok} ok"
+        elif n_warn:
+            summary = f"⚠  {n_warn} warning(s), {n_ok} ok"
+        else:
+            summary = f"✓  All {n_ok} checks passed"
+        self.after(0, lambda: self.summary_var.set(summary))
+        self.after(0, lambda: self.recheck_btn.configure(state="normal"))
+        self._is_running = False
 
 
 if __name__ == "__main__":

@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# Blocks commits that include rotation secrets, machine-specific config, or
+# accidentally-pasted private key material.
+#
+# Enable once per clone:  git config core.hooksPath .githooks
+
+set -e
+
+staged=$(git diff --cached --name-only --diff-filter=ACM)
+[ -z "$staged" ] && exit 0
+
+block=""
+while IFS= read -r f; do
+    [ -z "$f" ] && continue
+    case "$f" in
+        ssh_key|ssh_key.pub*|rotation-tokens.json|sessions.json|*.log|tools/*)
+            block="${block}  ${f}"$'\n'
+            ;;
+    esac
+done <<< "$staged"
+
+if [ -n "$block" ]; then
+    printf "\n[pre-commit] BLOCKED — these files are not safe to commit:\n%s" "$block"
+    printf "Remove them with 'git restore --staged <file>' and try again.\n\n"
+    exit 1
+fi
+
+if git diff --cached -U0 | grep -E "BEGIN (OPENSSH|RSA|EC|DSA) PRIVATE KEY" >/dev/null; then
+    printf "\n[pre-commit] BLOCKED — staged diff contains a PRIVATE KEY header.\n"
+    printf "Inspect with: git diff --cached | grep -B2 -A20 'BEGIN.*PRIVATE KEY'\n\n"
+    exit 1
+fi
+
+if echo "$staged" | grep -q '^sessions\.example\.json$'; then
+    if git show :sessions.example.json | grep -E '"folder":[[:space:]]*"[^"]+"' >/dev/null; then
+        printf "\n[pre-commit] BLOCKED — sessions.example.json has a non-empty 'folder'.\n"
+        printf "The example template should ship with all folders blank.\n\n"
+        exit 1
+    fi
+fi
+
+exit 0

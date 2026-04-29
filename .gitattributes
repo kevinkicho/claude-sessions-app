@@ -1,0 +1,4 @@
+# Shell scripts must keep LF line endings on Windows clones, or bash will
+# refuse to run them ("bad interpreter" on the shebang).
+*.sh        text eol=lf
+.githooks/* text eol=lf

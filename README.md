@@ -1,5 +1,9 @@
 # Claude Sessions
 
+> **How I use it:** I run Claude Code on my laptop PC and reach it from my phone over [Tailscale](https://tailscale.com/). Paired with my [Speech-to-Text app](https://github.com/kevinkicho/speech-to-text-app), I can dictate prompts to Claude from the phone while away from the keyboard — no typing on a glass keyboard required.
+
+![Claude Sessions GUI](screenshots/gui-main.png)
+
 Manage multiple [Claude Code](https://claude.com/claude-code) conversations across your PC and Android devices. Each "session" is a named WSL tmux session pinned to a project folder. Type `ses1`, `ses2`, etc. in any terminal and attach. Works identically over SSH from a phone — including live mirrored view.
 
 ## Why I built this
@@ -12,6 +16,17 @@ This tool fixes all three:
 - Each session is tied to a project folder, configured once in a GUI.
 - Optional symlink so Claude's memory is shared between Windows-side and WSL-side Claude Code for a given folder.
 - Multiple devices (laptop, phone, tablet) can attach to the same session simultaneously. Type on one; see it on the others in real time.
+
+## Real-life use cases
+
+- You start a refactor on the PC in the morning, then continue the same Claude conversation from your phone on the train without losing context.
+- You are cooking and remember a bug — you open Termux, type `ses2`, dictate the fix using the [Speech-to-Text app](https://github.com/kevinkicho/speech-to-text-app), and Claude edits the code on the PC.
+- You watch a long Claude run from the couch on your tablet while the actual work happens on the PC in another room.
+- You hand the tablet to a colleague so they can read along while you drive Claude from the laptop — both screens stay in sync live.
+- You leave the house with a Claude task running and check in from your phone every so often to see progress and answer prompts.
+- You want to swap a project mid-thought between Windows-side Claude and WSL-side Claude without losing the conversation history (the symlink option handles this).
+- You suspect a phone's SSH key has been exposed, so you click 🔑 Rotate SSH on the PC and have a fresh key on every device in a couple of minutes.
+- You are in bed and want to ask Claude one quick question about a project — `ses1` from the phone is faster than walking to the desk.
 
 ## How this was built
 
@@ -53,6 +68,7 @@ Under the hood:
 - All options persist to `sessions.json`
 - Works alongside Windows and WSL Claude installs, sharing memory via symlink
 - **SSH key rotation panel** — rotation of the SSH key used by your Android devices, with ADB push from the PC and a one-word command on each device
+- **Self-Diagnose panel** — one-click check of every prerequisite (WSL, Ubuntu, tmux, `claude`, `klaud`, PATH, sessions, OpenSSH, authorized_keys, Tailscale, ADB) with a fix hint for anything missing
 
 ## SSH key rotation panel
 
@@ -110,21 +126,32 @@ The setup docs recommend the release-signed builds because they're the normal, s
 
 The private key, public key, token state, and rotation logs are kept outside the repo (in a local `tools/` directory that is gitignored and contains the actual secret material — never commit it).
 
-## Requirements
+## Prerequisites
 
 **Windows PC (10 build 19041+ or 11):**
 - WSL 2 with Ubuntu installed
 - Python 3.10 or newer (for the GUI)
+- `sv-ttk` Python package (`pip install sv-ttk`) — for the dark theme
 - `tmux` installed inside Ubuntu
 - `claude` CLI available inside Ubuntu
-- OpenSSH Server (Windows optional feature)
+- The `klaud` bash function added to WSL `~/.bashrc` (see Setup §Part A step 3)
+- OpenSSH Server (Windows optional feature) so the phone can SSH in
+- A folder on your PATH for the `sesN.cmd` wrappers (default `C:\Users\<you>\.local\bin`)
 
 **Android device (phone or tablet):**
 - Termux — install from [F-Droid](https://f-droid.org/packages/com.termux/) or [GitHub releases](https://github.com/termux/termux-app/releases), **not the Play Store**. The Play Store build is deprecated (last updated 2020), ships with stale packages, and `pkg install` / `pkg update` against it often fails.
 - Termux's `openssh` package
+- An SSH key whose pubkey is added to the PC's `administrators_authorized_keys`
 
 **Shared transport:**
 - Tailscale (recommended) or any network that connects your phone to your PC
+- The PC stays awake while you want to use it remotely
+
+**Optional but recommended:**
+- ADB on the PC, only if you want to use the SSH key rotation panel
+- The [Speech-to-Text app](https://github.com/kevinkicho/speech-to-text-app) for dictating prompts to Claude from the phone
+
+> Tip: open the GUI and click **🔧 Diagnose** in the toolbar to check every prerequisite at once and get a fix hint for anything missing.
 
 ## Setup
 
@@ -186,7 +213,10 @@ pip install sv-ttk
 ```
 git clone https://github.com/kevinkicho/claude-sessions-app.git
 cd claude-sessions-app
+git config core.hooksPath .githooks
 ```
+
+The last line enables the bundled pre-commit hook, which blocks commits that contain SSH keys, rotation tokens, machine-specific `sessions.json`, or any text matching a private-key header. One-time per clone.
 
 The scripts expect:
 
@@ -312,7 +342,9 @@ Multiple devices can attach at once. Typing on one mirrors live to the others.
 
 ## Configuration
 
-`sessions.json` (auto-generated by the GUI):
+`sessions.json` is **auto-generated by the GUI** on first Save and **gitignored** — it never enters version control because it contains your local folder paths. The committed `sessions.example.json` is the empty template; fresh clones start with 3 blank rows automatically.
+
+Example shape:
 
 ```
 {
@@ -326,7 +358,7 @@ Multiple devices can attach at once. Typing on one mirrors live to the others.
 }
 ```
 
-You can edit this file directly if you prefer; the GUI re-reads it when you click **Reload**.
+You can edit `sessions.json` directly if you prefer; the GUI re-reads it when you click **Reload**.
 
 ## Tmux keybindings
 
