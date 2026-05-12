@@ -1,23 +1,25 @@
 """Launches a named WSL tmux session in a configured folder, and optionally
-ensures a symlink so WSL-side Claude Code shares state with the Windows side.
+ensures a symlink so WSL-side tool (Claude Code / OpenCode) shares state
+with the Windows side.
 
 Usage: session_launch.py <sesN>
 
-Reads sessions.json (next to this script) to find the folder, auto-claude
-flag, and symlink flag. Then runs:
+Reads sessions.json (next to this script) to find the folder, auto-start
+flag, symlink flag, and tool. Then runs:
 
     wsl -d <distro> -- tmux new-session -A -s <sesN> -c <wsl-folder> [cmd]
 
 `tmux new-session -A` attaches if the session exists; otherwise creates it.
-The optional `[cmd]` only runs on creation, so Claude sessions survive reattach.
+The optional `[cmd]` only runs on creation, so tool sessions survive reattach.
 """
 import json
 import os
-import re
 import subprocess
 import sys
 from pathlib import Path
 from typing import Tuple
+
+from tools_config import get_tool, DEFAULT_TOOL
 
 HERE = Path(__file__).resolve().parent
 CONFIG_PATH = HERE / "sessions.json"
@@ -34,35 +36,38 @@ def windows_to_wsl(win_path: str) -> str:
     return f"/mnt/{drive_letter}{tail}"
 
 
-def claude_slug_windows(folder: str) -> str:
-    """Replicate Claude Code's project-slug rule for a Windows path."""
-    return re.sub(r'[:\\_]', '-', folder.rstrip("\\/"))
+def ensure_memory_symlink(folder: str, tool_key: str | None = None) -> Tuple[bool, str]:
+    """Create a symlink so the WSL-side tool shares memory with the Windows side.
 
-
-def claude_slug_wsl(folder_wsl: str) -> str:
-    """Replicate Claude Code's project-slug rule for a WSL (/mnt/c/...) path."""
-    return re.sub(r'[/_]', '-', folder_wsl.rstrip("/"))
-
-
-def ensure_memory_symlink(folder: str) -> Tuple[bool, str]:
-    """Create ~/.claude/projects/<wsl-slug> -> <win-home>/.claude/projects/<win-slug>
-    inside WSL. Idempotent and refuses to clobber an existing real directory."""
+    The symlink path is driven by the tool's ``memory_dir_template``.  When the
+    template is ``None`` the tool doesn't have a per-project memory directory
+    (e.g. OpenCode), and this function is a no-op."""
     folder = folder.strip().rstrip("\\/")
     if not folder:
         return False, "folder is empty"
 
-    win_slug = claude_slug_windows(folder)
+    tool = get_tool(tool_key)
+    template = tool.get("memory_dir_template")
+    if not template:
+        return True, "(skipped — tool has no per-project memory dir)"
+
+    win_slug = tool["slug_windows"](folder)
     wsl_folder = windows_to_wsl(folder)
-    wsl_slug = claude_slug_wsl(wsl_folder)
+    wsl_slug = tool["slug_wsl"](wsl_folder)
 
     # Windows user's home translated to the WSL /mnt/c/... form.
     win_home_wsl = windows_to_wsl(str(Path.home()))
-    src = f"{win_home_wsl}/.claude/projects/{win_slug}"
-    # Destination uses bash's $HOME so it works for any WSL user.
-    dst_rel = f".claude/projects/{wsl_slug}"
+    src = f"{win_home_wsl}/{template.lstrip('$HOME/')}"
+    # Expand {slug} placeholder.
+    src = src.replace("{slug}", win_slug)
+    # Parent dir path for `mkdir -p` and the dst symlink.
+    dst_parent = template.lstrip("$HOME/").replace("{slug}", wsl_slug)
+    dst_rel = dst_parent  # full relative path under $HOME for the symlink target
+    # The parent of the symlink target (where the symlink should live).
+    dst_parent_dir = "/".join(dst_parent.split("/")[:-1])
 
     bash = (
-        'mkdir -p "$HOME/.claude/projects" && '
+        f'mkdir -p "$HOME/{dst_parent_dir}" && '
         f'DST="$HOME/{dst_rel}" && '
         'if [ -e "$DST" ] && [ ! -L "$DST" ]; then '
         '  echo "ERROR: $DST exists and is not a symlink; skipped" >&2; exit 1; '
@@ -95,7 +100,9 @@ def load_config() -> dict:
 
 def build_tmux_args(session_name: str, info: dict) -> list[str]:
     folder = (info.get("folder") or "").strip()
-    auto = bool(info.get("auto_claude"))
+    auto = bool(info.get("auto_claude"))  # backward compat — means "auto-start the tool"
+    tool_key = info.get("tool") or DEFAULT_TOOL
+    tool = get_tool(tool_key)
 
     args = ["wsl", "-d", WSL_DISTRO, "--", "tmux", "new-session", "-A", "-s", session_name]
 
@@ -105,7 +112,8 @@ def build_tmux_args(session_name: str, info: dict) -> list[str]:
         args += ["-c", windows_to_wsl(folder)]
 
     if auto:
-        args.append("bash -ic 'klaud; exec bash'")
+        fn = tool["function_name"]
+        args.append(f"bash -ic '{fn}; exec bash'")
 
     return args
 
@@ -123,7 +131,8 @@ def main() -> int:
         return 1
 
     if info.get("symlink_memory") and info.get("folder"):
-        ok, msg = ensure_memory_symlink(info["folder"])
+        tool_key = info.get("tool") or DEFAULT_TOOL
+        ok, msg = ensure_memory_symlink(info["folder"], tool_key)
         prefix = "[session_launch] symlink:" if ok else "[session_launch] symlink FAILED:"
         print(f"{prefix} {msg}", file=sys.stderr)
 

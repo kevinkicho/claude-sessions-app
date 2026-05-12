@@ -51,6 +51,7 @@ DARK = {
 
 sys.path.insert(0, str(HERE))
 from session_launch import ensure_memory_symlink  # noqa: E402
+from tools_config import TOOLS, DEFAULT_TOOL, get_tool, tool_keys  # noqa: E402
 
 
 def apply_dark_title_bar(window: tk.Misc) -> None:
@@ -74,7 +75,7 @@ def apply_dark_title_bar(window: tk.Misc) -> None:
         pass
 
 
-HELP_TEXT = """Claude Sessions — how it works
+HELP_TEXT = """Sessions — how it works
 
 Each row is a named tmux session inside WSL Ubuntu.
 Typing the session name (e.g. ses1) in any terminal attaches to it.
@@ -90,28 +91,32 @@ Name
   from Termux over SSH).
 
 Folder
-  Where Claude Code opens when the session is first created. Pick any
-  project directory on the Windows filesystem.
+  Where the coding assistant opens when the session is first created. Pick
+  any project directory on the Windows filesystem.
 
-Auto-klaud
-  When on, the session's first run executes `klaud`, which is
-  `claude --resume --dangerously-skip-permissions` if there is an existing
-  conversation for that folder, otherwise a fresh
-  `claude --dangerously-skip-permissions`.
+Tool
+  Which AI coding assistant to launch. Currently supports Claude Code and
+  OpenCode. Each tool has its own shell helper function (klaud / ocd).
+
+Auto-start
+  When on, the session's first run executes the tool's helper function
+  (e.g. klaud for Claude Code, ocd for OpenCode). For Claude this resumes
+  an existing conversation for that folder if one exists, or starts fresh
+  with --dangerously-skip-permissions.
 
 Link memory (default: on)
-  Creates a symlink inside WSL at ~/.claude/projects/<wsl-slug> pointing
-  to the Windows side's ~/.claude/projects/<win-slug>. Effect: Claude Code
-  running in WSL and Claude Code running in native Windows see the same
-  per-project history for that folder. Safe and idempotent — never
-  overwrites a real directory.
+  Creates a symlink inside WSL at the tool's project-memory path pointing
+  to the Windows side's equivalent directory. Effect: the tool running in
+  WSL and in native Windows see the same per-project history for that folder.
+  Safe and idempotent — never overwrites a real directory.
+  (OpenCode stores sessions in its own database, so this is skipped for it.)
 
 Launch
   Opens a new console window and runs the session. Saves changes first.
 
 ✕ (per row)
   Removes this row from sessions.json and the sesN.cmd wrapper.
-  Running tmux sessions and Claude memory are NOT touched.
+  Running tmux sessions and tool memory are NOT touched.
 
 ＋ (below all rows)
   Appends the next session (sesN+1) with link memory on by default.
@@ -198,7 +203,7 @@ class Tooltip:
 
 
 def default_entry() -> dict:
-    return {"folder": "", "auto_claude": True, "symlink_memory": True}
+    return {"folder": "", "auto_claude": True, "symlink_memory": True, "tool": DEFAULT_TOOL}
 
 
 def _ses_num(name: str) -> int:
@@ -248,12 +253,13 @@ def remove_wrapper(name: str) -> None:
 
 TOOLTIPS = {
     "Name": "Session name. Type this in any terminal to attach (e.g. ses1).",
-    "Folder": "The directory Claude Code opens in when the session is first created.",
+    "Folder": "The directory the tool opens in when the session is first created.",
     "Browse": "Pick a folder from a file dialog.",
-    "Auto-klaud": "If on, running the session auto-starts klaud: resume an existing Claude conversation for that folder, or start a fresh one with --dangerously-skip-permissions.",
-    "Link memory": "Creates a WSL symlink so Windows and WSL Claude share the same per-project conversation history for this folder. Safe and idempotent.",
+    "Tool": "Which AI coding assistant to launch in this session. Each tool has its own shell helper function (klaud for Claude Code, ocd for OpenCode).",
+    "Auto-start": "If on, running the session auto-starts the tool's helper function: for Claude Code this resumes an existing conversation for that folder if one exists, or starts a fresh one with --dangerously-skip-permissions.",
+    "Link memory": "Creates a WSL symlink so Windows and WSL tool instances share the same per-project conversation history for this folder. Safe and idempotent. Skipped for tools without per-project memory dirs (e.g. OpenCode).",
     "Launch": "Saves changes and opens a new console that runs this session.",
-    "Remove row": "Removes this row and its sesN.cmd wrapper. Does not touch Claude memory or a running tmux session.",
+    "Remove row": "Removes this row and its sesN.cmd wrapper. Does not touch tool memory or a running tmux session.",
     "Add row": "Appends the next session (sesN+1) with default settings (link memory on).",
 }
 
@@ -291,7 +297,7 @@ class SessionsApp(tk.Tk):
 
     def __init__(self):
         super().__init__()
-        self.title("Claude Sessions")
+        self.title("Sessions")
         self.minsize(900, 220)
         if HAS_SV_TTK:
             sv_ttk.set_theme("dark")
@@ -381,7 +387,7 @@ class SessionsApp(tk.Tk):
         Tooltip(reload_btn, "Discards unsaved UI changes and re-reads sessions.json from disk.")
 
     def _build_headers(self):
-        headers = ("Name", "Folder", "Browse", "Auto-klaud", "Link memory", "Launch", "")
+        headers = ("Name", "Folder", "Browse", "Tool", "Auto-start", "Link memory", "Launch", "")
         for col, text in enumerate(headers):
             lbl = ttk.Label(self._rows_frame, text=text, font=("TkDefaultFont", 9, "bold"))
             lbl.grid(row=0, column=col, sticky=tk.W, padx=(0, 6), pady=(0, 6))
@@ -425,12 +431,13 @@ class SessionsApp(tk.Tk):
             )
             btn.configure(font=("TkDefaultFont", 18, "bold"))
             self._add_btn_widget = btn
-        self._add_btn_widget.grid(row=row_idx, column=0, columnspan=7, pady=(10, 4))
+        self._add_btn_widget.grid(row=row_idx, column=0, columnspan=8, pady=(10, 4))
 
     def _build_row(self, row_idx: int, name: str, entry: dict):
         folder_var = tk.StringVar(value=entry.get("folder", ""))
         auto_var = tk.BooleanVar(value=bool(entry.get("auto_claude", True)))
         link_var = tk.BooleanVar(value=bool(entry.get("symlink_memory", True)))
+        tool_var = tk.StringVar(value=entry.get("tool") or DEFAULT_TOOL)
 
         widgets = []
 
@@ -450,19 +457,25 @@ class SessionsApp(tk.Tk):
         widgets.append(btn_browse)
         Tooltip(btn_browse, TOOLTIPS["Browse"])
 
+        tool_cb = ttk.Combobox(self._rows_frame, textvariable=tool_var,
+                               values=tool_keys(), state="readonly", width=14)
+        tool_cb.grid(row=row_idx, column=3, padx=(0, 10), pady=3)
+        widgets.append(tool_cb)
+        Tooltip(tool_cb, TOOLTIPS["Tool"])
+
         chk_auto = ttk.Checkbutton(self._rows_frame, variable=auto_var)
-        chk_auto.grid(row=row_idx, column=3, padx=(0, 10), pady=3)
+        chk_auto.grid(row=row_idx, column=4, padx=(0, 10), pady=3)
         widgets.append(chk_auto)
-        Tooltip(chk_auto, TOOLTIPS["Auto-klaud"])
+        Tooltip(chk_auto, TOOLTIPS["Auto-start"])
 
         chk_link = ttk.Checkbutton(self._rows_frame, variable=link_var)
-        chk_link.grid(row=row_idx, column=4, padx=(0, 10), pady=3)
+        chk_link.grid(row=row_idx, column=5, padx=(0, 10), pady=3)
         widgets.append(chk_link)
         Tooltip(chk_link, TOOLTIPS["Link memory"])
 
         btn_launch = ttk.Button(self._rows_frame, text=f"Launch {name}", width=12,
                                 command=lambda n=name: self._launch(n))
-        btn_launch.grid(row=row_idx, column=5, pady=3)
+        btn_launch.grid(row=row_idx, column=6, pady=3)
         widgets.append(btn_launch)
         Tooltip(btn_launch, TOOLTIPS["Launch"])
 
@@ -470,7 +483,7 @@ class SessionsApp(tk.Tk):
             self._rows_frame, "✕", lambda n=name: self._remove_row(n),
             tooltip=TOOLTIPS["Remove row"], fg=DARK["fg_mute"],
         )
-        btn_remove.grid(row=row_idx, column=6, padx=(6, 0), pady=3)
+        btn_remove.grid(row=row_idx, column=7, padx=(6, 0), pady=3)
         widgets.append(btn_remove)
 
         self._row_state.append({
@@ -478,6 +491,7 @@ class SessionsApp(tk.Tk):
             "folder_var": folder_var,
             "auto_var": auto_var,
             "link_var": link_var,
+            "tool_var": tool_var,
             "widgets": widgets,
         })
 
@@ -546,13 +560,14 @@ class SessionsApp(tk.Tk):
                 "folder": st["folder_var"].get().strip(),
                 "auto_claude": bool(st["auto_var"].get()),
                 "symlink_memory": bool(st["link_var"].get()),
+                "tool": st["tool_var"].get() or DEFAULT_TOOL,
             }
 
     def _apply_symlinks(self) -> list[str]:
         msgs = []
         for name, info in self.config_data.items():
             if info.get("symlink_memory") and info.get("folder"):
-                ok, msg = ensure_memory_symlink(info["folder"])
+                ok, msg = ensure_memory_symlink(info["folder"], info.get("tool"))
                 prefix = "✓" if ok else "✗"
                 msgs.append(f"{prefix} {name}")
         return msgs
@@ -596,7 +611,7 @@ class SessionsApp(tk.Tk):
 
     def _show_help(self):
         win = tk.Toplevel(self)
-        win.title("Claude Sessions — Help")
+        win.title("Sessions — Help")
         win.geometry("720x600")
         win.configure(bg=DARK["bg"])
         apply_dark_title_bar(win)
@@ -1224,7 +1239,7 @@ class DiagnosticsDialog(tk.Toplevel):
                   font=("TkDefaultFont", 13, "bold")).pack(anchor="w")
         ttk.Label(
             outer,
-            text=("Checks every prerequisite for Claude Sessions on this PC. "
+            text=("Checks every prerequisite for Sessions on this PC. "
                   "Green = ok, amber = warning (works but degraded), red = "
                   "blocking. Each failure includes a one-line fix hint."),
             wraplength=720, justify="left", foreground="#aaa",
@@ -1356,35 +1371,31 @@ class DiagnosticsDialog(tk.Toplevel):
             add("info", "tmux installed in Ubuntu",
                 "skipped — WSL/Ubuntu not reachable")
 
-        # 5. claude CLI in WSL
-        if wsl_ok:
-            ok, out = _run(["wsl", "-d", "Ubuntu", "--", "which", "claude"],
-                           timeout=10)
-            if ok and out.strip():
-                add("ok", "claude CLI installed in Ubuntu", out.strip())
+        # 5. Tool CLI binaries + shell functions
+        from tools_config import TOOLS as _DIAG_TOOLS
+        for tool_key in tool_keys():
+            tool_info = _DIAG_TOOLS[tool_key]
+            display = tool_info["display_name"]
+            if wsl_ok:
+                ok, out = _run(["wsl", "-d", "Ubuntu", "--", "bash", "-ic",
+                                tool_info["check_install"]], timeout=10)
+                if ok and out.strip():
+                    add("ok", f"{display} CLI installed", out.strip())
+                else:
+                    add("warn", f"{display} CLI installed",
+                        f"not found in WSL",
+                        f"Install {display} inside Ubuntu to use this tool.")
+                ok, out = _run(["wsl", "-d", "Ubuntu", "--", "bash", "-ic",
+                                tool_info["check_function"]], timeout=10)
+                if ok and ("function" in out or "is a function" in out or "is a shell" in out or "/" in out):
+                    add("ok", f"{display} shell function defined",
+                        f"found in interactive shell")
+                else:
+                    add("warn", f"{display} shell function defined",
+                        f"{tool_info['function_name']}() not found in ~/.bashrc",
+                        f"Add the {tool_info['function_name']}() function — see README")
             else:
-                add("fail", "claude CLI installed in Ubuntu", "not found",
-                    "wsl -d Ubuntu -- sudo npm install -g @anthropic-ai/claude-code")
-        else:
-            add("info", "claude CLI installed in Ubuntu",
-                "skipped — WSL/Ubuntu not reachable")
-
-        # 6. klaud function
-        if wsl_ok:
-            ok, out = _run(
-                ["wsl", "-d", "Ubuntu", "--", "bash", "-ic", "type klaud"],
-                timeout=10,
-            )
-            if ok and ("function" in out or "klaud is" in out):
-                add("ok", "klaud function defined in WSL",
-                    "found in interactive shell")
-            else:
-                add("warn", "klaud function defined in WSL",
-                    "not found in ~/.bashrc",
-                    "Add the klaud() function — see README §Setup Part A step 3")
-        else:
-            add("info", "klaud function defined in WSL",
-                "skipped — WSL/Ubuntu not reachable")
+                add("info", f"{display} checks", "skipped — WSL/Ubuntu not reachable")
 
         # 7. WRAPPER_DIR exists
         if WRAPPER_DIR.exists():

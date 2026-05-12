@@ -1,38 +1,33 @@
-# Claude Sessions
+# Sessions
 
-> **How I use it:** I run Claude Code on my laptop PC and reach it from my phone over [Tailscale](https://tailscale.com/). Paired with my [Speech-to-Text app](https://github.com/kevinkicho/speech-to-text-app), I can dictate prompts to Claude from the phone while away from the keyboard — no typing on a glass keyboard required.
+> **How I use it:** I run coding assistants on my laptop PC and reach them from my phone over [Tailscale](https://tailscale.com/). Paired with my [Speech-to-Text app](https://github.com/kevinkicho/speech-to-text-app), I can dictate prompts from the phone while away from the keyboard — no typing on a glass keyboard required.
 
-![Claude Sessions GUI](screenshots/gui-main.png)
+![Sessions GUI](screenshots/gui-main.png)
 
-Manage multiple [Claude Code](https://claude.com/claude-code) conversations across your PC and Android devices. Each "session" is a named WSL tmux session pinned to a project folder. Type `ses1`, `ses2`, etc. in any terminal and attach. Works identically over SSH from a phone — including live mirrored view.
+Manage multiple coding assistant conversations across your PC and Android devices. Each "session" is a named WSL tmux session pinned to a project folder. Supports both [Claude Code](https://claude.com/claude-code) and [OpenCode](https://opencode.ai). Type `ses1`, `ses2`, etc. in any terminal and attach. Works identically over SSH from a phone — including live mirrored view.
 
 ## Why I built this
 
-I had several Claude Code projects running in parallel on a Windows PC, and I often wanted to check on or continue one from my phone or tablet while away from my desk. Plain remote desktop (VNC) over Tailscale worked but typing on Android's keyboard through a remote-desktop view was miserable. SSH from Termux gave me a real keyboard, but spinning up `tmux attach -t somename` with different names for each project got tedious, and Claude Code's per-project memory on Windows and WSL lived under different slugs so I'd lose context when crossing the OS boundary.
+I had several projects running in parallel on a Windows PC, and I often wanted to check on or continue one from my phone or tablet while away from my desk. Plain remote desktop (VNC) over Tailscale worked but typing on Android's keyboard through a remote-desktop view was miserable. SSH from Termux gave me a real keyboard, but spinning up `tmux attach -t somename` with different names for each project got tedious, and Claude Code's per-project memory on Windows and WSL lived under different slugs so I'd lose context when crossing the OS boundary.
 
-This tool fixes all three:
+This tool fixes all of these:
 
 - Short, memorable commands (`ses1`, `ses2`, ...) that attach from anywhere.
 - Each session is tied to a project folder, configured once in a GUI.
-- Optional symlink so Claude's memory is shared between Windows-side and WSL-side Claude Code for a given folder.
+- **Multi-tool support:** pick Claude Code or OpenCode per session via a dropdown.
+- Optional symlink so tool memory is shared between Windows-side and WSL-side instances for a given folder.
 - Multiple devices (laptop, phone, tablet) can attach to the same session simultaneously. Type on one; see it on the others in real time.
 
 ## Real-life use cases
 
-- You start a refactor on the PC in the morning, then continue the same Claude conversation from your phone on the train without losing context.
-- You are cooking and remember a bug — you open Termux, type `ses2`, dictate the fix using the [Speech-to-Text app](https://github.com/kevinkicho/speech-to-text-app), and Claude edits the code on the PC.
-- You watch a long Claude run from the couch on your tablet while the actual work happens on the PC in another room.
-- You hand the tablet to a colleague so they can read along while you drive Claude from the laptop — both screens stay in sync live.
-- You leave the house with a Claude task running and check in from your phone every so often to see progress and answer prompts.
-- You want to swap a project mid-thought between Windows-side Claude and WSL-side Claude without losing the conversation history (the symlink option handles this).
+- You start a refactor on the PC in the morning, then continue the same conversation from your phone on the train without losing context.
+- You are cooking and remember a bug — you open Termux, type `ses2`, dictate the fix using the [Speech-to-Text app](https://github.com/kevinkicho/speech-to-text-app), and the assistant edits the code on the PC.
+- You watch a long run from the couch on your tablet while the actual work happens on the PC in another room.
+- You hand the tablet to a colleague so they can read along while you drive from the laptop — both screens stay in sync live.
+- You leave the house with a task running and check in from your phone every so often to see progress and answer prompts.
+- You want to swap a project mid-thought between Windows-side and WSL-side tools without losing conversation history (the symlink option handles this).
 - You suspect a phone's SSH key has been exposed, so you click 🔑 Rotate SSH on the PC and have a fresh key on every device in a couple of minutes.
-- You are in bed and want to ask Claude one quick question about a project — `ses1` from the phone is faster than walking to the desk.
-
-## How this was built
-
-All of the code in this repository was written by [Claude Code](https://claude.com/claude-code) running Claude Opus 4.7 (Anthropic's CLI coding assistant). I ([@kevinkicho](https://github.com/kevinkicho)) described the need, tested each iteration on a real Galaxy S22 + Galaxy Tab S7 + Windows 11 setup, and fed concrete feedback (observed errors, wrong behavior, UI tweaks) back to Claude. Claude handled the architecture, the Python and Kotlin code, the shell/PowerShell scripting, and the OS-specific plumbing.
-
-Treat this as working but lightly reviewed. PRs welcome.
+- You are in bed and want to ask one quick question about a project — `ses1` from the phone is faster than walking to the desk.
 
 ## How it works
 
@@ -47,28 +42,29 @@ Windows PowerShell        SSH from phone Termux        SSH from tablet Termux
                                    WSL Ubuntu bash
                                  opened in folder X
                                            |
-                              klaud (claude --resume
-                              --dangerously-skip-permissions)
+                          klaud / ocd (Claude Code / OpenCode)
 ```
 
 Under the hood:
 
-1. A GUI (`sessions_gui.pyw`) edits `sessions.json`, which maps each name (ses1, ses2, ...) to a folder and two boolean toggles.
+1. A GUI (`sessions_gui.pyw`) edits `sessions.json`, which maps each name (ses1, ses2, ...) to a folder, tool (Claude Code / OpenCode), and boolean toggles.
 2. On save, the GUI generates `ses1.cmd`, `ses2.cmd`, ... in a directory on your Windows PATH.
 3. Each `sesN.cmd` calls `session_launch.py`, which runs `wsl -d Ubuntu -- tmux new-session -A -s sesN -c <folder>`. `-A` attaches if the session already exists, creates otherwise.
-4. If "Auto-klaud" is on, the session's first run executes `klaud`, a bash function that either resumes the most recent Claude conversation for that folder or starts a new one with `--dangerously-skip-permissions`.
-5. If "Link memory" is on, a symlink is created inside WSL at `~/.claude/projects/<wsl-slug>` pointing to `/mnt/c/Users/<you>/.claude/projects/<win-slug>`. Effect: Windows-side and WSL-side Claude share the same per-project conversation history for that folder.
+4. A tool registry (`tools_config.py`) defines each assistant's CLI, shell helper function (`klaud` for Claude, `ocd` for OpenCode), and memory paths. Adding support for a new tool is a single entry in this file.
+5. If "Auto-start" is on, the session's first run executes the tool's helper function (e.g. `klaud` resumes an existing Claude conversation, or starts fresh).
+6. If "Link memory" is on, a symlink is created inside WSL so Windows and WSL instances share the same per-project conversation history.
 
 ## Features
 
 - Dark-mode GUI (Sun Valley theme) with tooltips and a built-in Help dialog
+- **Multi-tool support** — per-session dropdown for Claude Code or OpenCode
 - Dynamic session list: starts with 3 rows, `+` button adds more with no hard limit
-- Per-row `x` button removes a session (doesn't touch Claude memory or running tmux state)
+- Per-row `x` button removes a session (doesn't touch tool memory or running tmux state)
 - Per-row Launch button opens that session in a new console window
 - All options persist to `sessions.json`
-- Works alongside Windows and WSL Claude installs, sharing memory via symlink
+- Memory symlink sharing between Windows and WSL tool instances (tool-specific paths)
 - **SSH key rotation panel** — rotation of the SSH key used by your Android devices, with ADB push from the PC and a one-word command on each device
-- **Self-Diagnose panel** — one-click check of every prerequisite (WSL, Ubuntu, tmux, `claude`, `klaud`, PATH, sessions, OpenSSH, authorized_keys, Tailscale, ADB) with a fix hint for anything missing
+- **Self-Diagnose panel** — one-click check of every prerequisite (WSL, Ubuntu, tmux, tools, PATH, sessions, OpenSSH, authorized_keys, Tailscale, ADB) with a fix hint for anything missing
 
 ## SSH key rotation panel
 
@@ -76,7 +72,7 @@ Click **🔑 Rotate SSH** in the toolbar to open a dialog that drives the whole 
 
 - **Step 1 — Push rotate-key script to connected device(s)** — ADB-pushes `rotate-key.sh` to `/sdcard/rk.sh` and the current private key to `/sdcard/Download/id_ed25519` on every connected device. Idempotent — safe to re-run. One-time per device.
 - **Step 2a — 🔑 Generate new SSH key (UAC swap)** — generates a new ed25519 keypair locally, triggers one UAC prompt to replace `C:\ProgramData\ssh\administrators_authorized_keys`, and issues a 10-minute rotation token. Does **not** push to any device — that's 2b. Click ONCE per rotation.
-- **Step 2b — 📤 Push current key to connected device(s)** — pushes the currently-staged private key to whatever devices are connected right now. Split out from 2a because most setups only have one free USB port, so the normal workflow is: rotate once (2a) → plug in device 1, push (2b) → unplug → plug in device 2, push → repeat. Safe to click many times.
+- **Step 2b — 📤 Push current key to connected device(s)** — pushes the currently-staged private key to whatever devices are connected right now. Split out from 2a because most setups only have one free USB port. Safe to click many times.
 - **Step 3 — on each device** — close Termux (swipe out of Recents), reopen it, and type `rotate-key`. This can't be automated from the PC because Android blocks ADB from holding Termux's `RUN_COMMAND` permission; see [Why no "Run rotate-key" button?](#why-no-run-rotate-key-button) below.
 
 The dialog also shows:
@@ -133,8 +129,9 @@ The private key, public key, token state, and rotation logs are kept outside the
 - Python 3.10 or newer (for the GUI)
 - `sv-ttk` Python package (`pip install sv-ttk`) — for the dark theme
 - `tmux` installed inside Ubuntu
-- `claude` CLI available inside Ubuntu
-- The `klaud` bash function added to WSL `~/.bashrc` (see Setup §Part A step 3)
+- At least one coding assistant installed in WSL:
+  - **Claude Code:** `npm install -g @anthropic-ai/claude-code` + the `klaud` bash function (see Setup)
+  - **OpenCode:** `npm install -g opencode-ai` + the `ocd` bash function (see Setup)
 - OpenSSH Server (Windows optional feature) so the phone can SSH in
 - A folder on your PATH for the `sesN.cmd` wrappers (default `C:\Users\<you>\.local\bin`)
 
@@ -149,7 +146,7 @@ The private key, public key, token state, and rotation logs are kept outside the
 
 **Optional but recommended:**
 - ADB on the PC, only if you want to use the SSH key rotation panel
-- The [Speech-to-Text app](https://github.com/kevinkicho/speech-to-text-app) for dictating prompts to Claude from the phone
+- The [Speech-to-Text app](https://github.com/kevinkicho/speech-to-text-app) for dictating prompts from the phone
 
 > Tip: open the GUI and click **🔧 Diagnose** in the toolbar to check every prerequisite at once and get a fix hint for anything missing.
 
@@ -165,17 +162,27 @@ wsl --install -d Ubuntu
 
 Reboot if prompted. On first launch of Ubuntu, create a Linux username and password.
 
-2. **Install tmux, Node, and Claude Code inside Ubuntu:**
+2. **Install tmux, Node, and your chosen assistants inside Ubuntu:**
 
 ```
 wsl -d Ubuntu
 sudo apt update
 sudo apt install -y tmux nodejs npm
+```
+
+For Claude Code:
+```
 sudo npm install -g @anthropic-ai/claude-code
 ```
 
-3. **Add the `klaud` function** to your WSL `~/.bashrc`:
+For OpenCode:
+```
+sudo npm install -g opencode-ai
+```
 
+3. **Add the helper functions** to your WSL `~/.bashrc`:
+
+**For Claude Code (`klaud`):**
 ```
 cat >> ~/.bashrc << 'EOF'
 
@@ -190,6 +197,20 @@ klaud() {
     fi
 }
 EOF
+```
+
+**For OpenCode (`ocd`):**
+```
+cat >> ~/.bashrc << 'EOF'
+
+ocd() {
+    command opencode --continue "$@"
+}
+EOF
+```
+
+Then reload:
+```
 source ~/.bashrc
 ```
 
@@ -238,7 +259,6 @@ If `.local\bin` isn't on your PATH, add it (this happens once, via System Proper
 
 - `CONFIG_PATH` and `LAUNCHER` point at wherever you cloned the scripts.
 - `WRAPPER_DIR` points at your PATH-bin directory.
-- The Windows-side `.claude\projects` base is `C:\Users\<you>\.claude\projects\`.
 
 8. **Launch the GUI:**
 
@@ -251,9 +271,9 @@ Optionally create a Desktop shortcut that points at `pythonw.exe` with the scrip
 ### Part B — First session
 
 1. Double-click the GUI (or launch via `pythonw`).
-2. For `ses1`, click Browse and select a project folder. Leave "Auto-klaud" and "Link memory" checked.
+2. For `ses1`, click Browse and select a project folder. Pick your tool (Claude Code or OpenCode) from the Tool dropdown. Leave "Auto-start" and "Link memory" checked.
 3. Click Save. The GUI creates `ses1.cmd` on your PATH and (if Link memory is on) the WSL symlink.
-4. In any PowerShell or cmd window, type `ses1`. A new terminal opens, you're in that project's folder inside WSL, and Claude Code auto-resumes.
+4. In any PowerShell or cmd window, type `ses1`. A new terminal opens, you're in that project's folder inside WSL, and the tool auto-resumes.
 
 ### Part C — Android setup (per device)
 
@@ -351,14 +371,31 @@ Example shape:
   "ses1": {
     "folder": "C:\\Users\\you\\Desktop\\project-a",
     "auto_claude": true,
-    "symlink_memory": true
+    "symlink_memory": true,
+    "tool": "opencode"
   },
   "ses2": { ... },
   "ses3": { ... }
 }
 ```
 
+The `tool` field selects which coding assistant launches in that session. Supported values: `"claude"` (Claude Code, default for existing configs) and `"opencode"` (OpenCode). Adding a new tool only requires an entry in `tools_config.py`.
+
 You can edit `sessions.json` directly if you prefer; the GUI re-reads it when you click **Reload**.
+
+## Architecture
+
+The tool system is driven by a central registry in `tools_config.py`. Each tool defines its CLI command, shell helper function, memory directory template, and slug-generation rules. The GUI and launcher both read from this registry — adding support for a new assistant is a single dictionary entry.
+
+**What was attempted for auto-session-detection (and why it didn't work):**
+- `client_activity` timestamps — inflated by AI output, making background sessions appear "active"
+- `session_last_attached` — only updates on explicit re-attach, not on Termux tab switches
+- Server-side long-poll `/watch` — stale marker file shadowed client activity
+- Handler-based polling — same detection limits as above
+- Termux `RUN_COMMAND` intent — can't query remote SSH state from Termux's local shell
+- Android Accessibility Service — can't distinguish Termux tab content without OCR
+
+The manual session picker (tap pill → pick session) remains the reliable interaction model for the speech-to-text flow.
 
 ## Tmux keybindings
 
@@ -376,17 +413,20 @@ The repo's `~/.tmux.conf` seed sets:
 ```
 claude-sessions-app/
   session_launch.py     # reads sessions.json, runs wsl tmux new-session
-  sessions_gui.pyw      # dark-mode GUI (Tkinter + sv-ttk)
-  sessions.json         # config (auto-created on first Save)
+  sessions_gui.pyw      # dark-mode GUI (Tkinter + sv-ttk) with tool selector
+  tools_config.py       # tool registry (Claude Code, OpenCode, extensible)
+  sessions.json         # config (auto-created on first Save, gitignored)
   README.md
   LICENSE
 ```
 
 ## Customization
 
-- **Change the default Whisper-less wrapper dir:** edit `WRAPPER_DIR` in `sessions_gui.pyw` and `session_launch.py`.
-- **Change the default WSL distro:** replace `Ubuntu` in `session_launch.py`'s `wsl -d Ubuntu` calls.
-- **Change the shell that tmux launches:** default is bash; edit the `build_tmux_args` function.
+- **Add a new coding assistant:** add an entry to `TOOLS` in `tools_config.py` — no other changes needed.
+- **Change the default wrapper dir:** edit `WRAPPER_DIR` in `sessions_gui.pyw`.
+- **Change the default WSL distro:** set the `CLAUDE_SESSIONS_DISTRO` environment variable or edit `WSL_DISTRO` in `session_launch.py`.
+- **Change the shell that tmux launches:** default is bash; edit the `build_tmux_args` function in `session_launch.py`.
+- **Change the default model for OpenCode:** set `OCD_MODEL` environment variable in WSL's `~/.bashrc` (e.g. `export OCD_MODEL="provider/model"`).
 - **Change the accent color in dark mode:** edit `DARK["accent"]` at the top of `sessions_gui.pyw`.
 
 ## Repository
@@ -399,6 +439,7 @@ MIT.
 
 ## Credits
 
-- [Claude Code](https://claude.com/claude-code) (Claude Opus 4.7) wrote all of the code in this repo. I described the need, provided feedback after each iteration, and tested on real hardware.
+- [Claude Code](https://claude.com/claude-code) (Claude Opus 4.7) wrote the original code in this repo. I described the need, provided feedback after each iteration, and tested on real hardware.
+- [OpenCode](https://opencode.ai) extensibility layer added with DeepSeek V4 Pro.
 - Dark theme by [sv-ttk](https://github.com/rdbende/Sun-Valley-ttk-theme).
 - [tmux](https://github.com/tmux/tmux) for the shared-session backbone.

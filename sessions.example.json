@@ -2,16 +2,19 @@
   "ses1": {
     "folder": "",
     "auto_claude": true,
-    "symlink_memory": true
+    "symlink_memory": true,
+    "tool": "claude"
   },
   "ses2": {
     "folder": "",
     "auto_claude": true,
-    "symlink_memory": true
+    "symlink_memory": true,
+    "tool": "claude"
   },
   "ses3": {
     "folder": "",
     "auto_claude": true,
-    "symlink_memory": true
+    "symlink_memory": true,
+    "tool": "claude"
   }
 }
