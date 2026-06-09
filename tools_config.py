@@ -1,4 +1,4 @@
-"""Tool registry for AI coding assistants supported by Claude Sessions.
+"""Tool registry for AI coding assistants supported by AI Sessions.
 
 Add a new entry to TOOLS to support a new assistant. The rest of the codebase
 reads from this registry, so no other files need changes for a new tool.
@@ -72,6 +72,24 @@ TOOLS = {
         "check_install": "which opencode",
         "check_function": "type ocd",
     },
+    "grok": {
+        "display_name": "Grok Build",
+        "cli_cmd": "grok",
+        "function_name": "grok",
+        "function_body": (
+            "grok() {\n"
+            '    command grok "$@"\n'
+            "}"
+        ),
+        # Grok Build (xAI) manages its own persistent sessions, /remember context,
+        # and workspace memory. No simple per-project directory like Claude Code,
+        # so memory symlinking is skipped (like OpenCode).
+        "memory_dir_template": None,
+        "slug_windows": _default_slug_windows,
+        "slug_wsl": _default_slug_wsl,
+        "check_install": "which grok",
+        "check_function": "type grok",
+    },
 }
 
 DEFAULT_TOOL = "claude"
@@ -84,5 +102,5 @@ def get_tool(tool_key: str | None) -> dict:
 
 
 def tool_keys() -> list[str]:
-    """Sorted list of registered tool keys (for UI dropdowns)."""
-    return sorted(TOOLS.keys())
+    """List of registered tool keys in definition order (for UI dropdowns)."""
+    return list(TOOLS.keys())

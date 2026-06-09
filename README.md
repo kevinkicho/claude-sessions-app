@@ -1,10 +1,12 @@
-# Sessions
+# AI Sessions
 
-> **How I use it:** I run coding assistants on my laptop PC and reach them from my phone over [Tailscale](https://tailscale.com/). Paired with my [Speech-to-Text app](https://github.com/kevinkicho/speech-to-text-app), I can dictate prompts from the phone while away from the keyboard — no typing on a glass keyboard required.
+> **How I use it:** I run coding assistants (Claude Code, OpenCode, Grok Build, and more) on my laptop PC and reach them from my phone over [Tailscale](https://tailscale.com/). Paired with my [Speech-to-Text app](https://github.com/kevinkicho/speech-to-text-app), I can dictate prompts from the phone while away from the keyboard — no typing on a glass keyboard required.
 
 ![Sessions GUI](screenshots/gui-main.png)
 
-Manage multiple coding assistant conversations across your PC and Android devices. Each "session" is a named WSL tmux session pinned to a project folder. Supports both [Claude Code](https://claude.com/claude-code) and [OpenCode](https://opencode.ai). Type `ses1`, `ses2`, etc. in any terminal and attach. Works identically over SSH from a phone — including live mirrored view.
+Manage multiple coding assistant conversations across your PC and Android devices. Each "session" is a named WSL tmux session pinned to a project folder. Supports [Claude Code](https://claude.com/claude-code), [OpenCode](https://opencode.ai), [Grok Build](https://x.ai/cli), and easily extensible to more. Type `ses1`, `ses2`, etc. in any terminal and attach. Works identically over SSH from a phone — including live mirrored view.
+
+**Formerly known as Claude Sessions** — now rebranded to AI Sessions to reflect support for multiple AI coding assistants.
 
 ## Why I built this
 
@@ -14,7 +16,7 @@ This tool fixes all of these:
 
 - Short, memorable commands (`ses1`, `ses2`, ...) that attach from anywhere.
 - Each session is tied to a project folder, configured once in a GUI.
-- **Multi-tool support:** pick Claude Code or OpenCode per session via a dropdown.
+- **Multi-tool support:** pick Claude Code, OpenCode, Grok Build, or others per session via a dropdown.
 - Optional symlink so tool memory is shared between Windows-side and WSL-side instances for a given folder.
 - Multiple devices (laptop, phone, tablet) can attach to the same session simultaneously. Type on one; see it on the others in real time.
 
@@ -42,27 +44,27 @@ Windows PowerShell        SSH from phone Termux        SSH from tablet Termux
                                    WSL Ubuntu bash
                                  opened in folder X
                                            |
-                          klaud / ocd (Claude Code / OpenCode)
+                          klaud / ocd / grok (Claude Code / OpenCode / Grok Build)
 ```
 
 Under the hood:
 
-1. A GUI (`sessions_gui.pyw`) edits `sessions.json`, which maps each name (ses1, ses2, ...) to a folder, tool (Claude Code / OpenCode), and boolean toggles.
+1. A GUI (`sessions_gui.pyw`) edits `sessions.json`, which maps each name (ses1, ses2, ...) to a folder, tool (Claude Code / OpenCode / Grok Build / ...), and boolean toggles.
 2. On save, the GUI generates `ses1.cmd`, `ses2.cmd`, ... in a directory on your Windows PATH.
 3. Each `sesN.cmd` calls `session_launch.py`, which runs `wsl -d Ubuntu -- tmux new-session -A -s sesN -c <folder>`. `-A` attaches if the session already exists, creates otherwise.
-4. A tool registry (`tools_config.py`) defines each assistant's CLI, shell helper function (`klaud` for Claude, `ocd` for OpenCode), and memory paths. Adding support for a new tool is a single entry in this file.
-5. If "Auto-start" is on, the session's first run executes the tool's helper function (e.g. `klaud` resumes an existing Claude conversation, or starts fresh).
-6. If "Link memory" is on, a symlink is created inside WSL so Windows and WSL instances share the same per-project conversation history.
+4. A tool registry (`tools_config.py`) defines each assistant's CLI, shell helper function (`klaud` for Claude, `ocd` for OpenCode, `grok` for Grok Build), and memory paths. Adding support for a new tool is a single entry in this file. The launcher and GUI use it for everything.
+5. If "Auto-start" is on, the session's first run executes the tool's helper function (e.g. `klaud` resumes an existing Claude conversation, or starts fresh; `gkd` launches Grok Build).
+6. If "Link memory" is on, a symlink is created inside WSL so Windows and WSL instances share the same per-project conversation history (only for tools that use per-project memory directories on disk, e.g. Claude Code).
 
 ## Features
 
 - Dark-mode GUI (Sun Valley theme) with tooltips and a built-in Help dialog
-- **Multi-tool support** — per-session dropdown for Claude Code or OpenCode
+- **Multi-tool support** — per-session dropdown for Claude Code, OpenCode, Grok Build, and more (extensible)
 - Dynamic session list: starts with 3 rows, `+` button adds more with no hard limit
 - Per-row `x` button removes a session (doesn't touch tool memory or running tmux state)
 - Per-row Launch button opens that session in a new console window
 - All options persist to `sessions.json`
-- Memory symlink sharing between Windows and WSL tool instances (tool-specific paths)
+- Memory symlink sharing between Windows and WSL tool instances (tool-specific paths; skipped for OpenCode and Grok Build)
 - **SSH key rotation panel** — rotation of the SSH key used by your Android devices, with ADB push from the PC and a one-word command on each device
 - **Self-Diagnose panel** — one-click check of every prerequisite (WSL, Ubuntu, tmux, tools, PATH, sessions, OpenSSH, authorized_keys, Tailscale, ADB) with a fix hint for anything missing
 
@@ -132,6 +134,7 @@ The private key, public key, token state, and rotation logs are kept outside the
 - At least one coding assistant installed in WSL:
   - **Claude Code:** `npm install -g @anthropic-ai/claude-code` + the `klaud` bash function (see Setup)
   - **OpenCode:** `npm install -g opencode-ai` + the `ocd` bash function (see Setup)
+  - **Grok Build:** `curl -fsSL https://x.ai/cli/install.sh | bash` (the `grok` command in PATH is sufficient for basic auto-start; optional `grok()` wrapper for customization) (see Setup)
 - OpenSSH Server (Windows optional feature) so the phone can SSH in
 - A folder on your PATH for the `sesN.cmd` wrappers (default `C:\Users\<you>\.local\bin`)
 
@@ -180,6 +183,12 @@ For OpenCode:
 sudo npm install -g opencode-ai
 ```
 
+For Grok Build (xAI):
+```
+curl -fsSL https://x.ai/cli/install.sh | bash
+```
+(Requires SuperGrok or X Premium+ subscription for full access. Once the `grok` binary is in your WSL PATH, Auto-start will launch it directly. See the helper in `setup-grok-helper.sh` if you want a customizable wrapper function.)
+
 3. **Add the helper functions** to your WSL `~/.bashrc`:
 
 **For Claude Code (`klaud`):**
@@ -209,10 +218,22 @@ ocd() {
 EOF
 ```
 
+**For Grok Build (optional wrapper):**
+```
+cat >> ~/.bashrc << 'EOF'
+
+grok() {
+    command grok "$@"
+}
+EOF
+```
+
 Then reload:
 ```
 source ~/.bashrc
 ```
+
+**Note:** Because the tool name matches the binary, you can often skip defining any wrapper — `bash -ic 'grok; exec bash'` will find the installed `grok` command directly. The wrapper above is only needed if you want to customize behavior. A `setup-grok-helper.sh` is provided in the folder for one-command setup.
 
 4. **Enable OpenSSH Server** in an elevated Windows PowerShell so your phone can SSH in:
 
@@ -271,7 +292,7 @@ Optionally create a Desktop shortcut that points at `pythonw.exe` with the scrip
 ### Part B — First session
 
 1. Double-click the GUI (or launch via `pythonw`).
-2. For `ses1`, click Browse and select a project folder. Pick your tool (Claude Code or OpenCode) from the Tool dropdown. Leave "Auto-start" and "Link memory" checked.
+2. For `ses1`, click Browse and select a project folder. Pick your tool (Claude Code, OpenCode, or Grok Build) from the Tool dropdown. Leave "Auto-start" and "Link memory" checked.
 3. Click Save. The GUI creates `ses1.cmd` on your PATH and (if Link memory is on) the WSL symlink.
 4. In any PowerShell or cmd window, type `ses1`. A new terminal opens, you're in that project's folder inside WSL, and the tool auto-resumes.
 
@@ -379,7 +400,7 @@ Example shape:
 }
 ```
 
-The `tool` field selects which coding assistant launches in that session. Supported values: `"claude"` (Claude Code, default for existing configs) and `"opencode"` (OpenCode). Adding a new tool only requires an entry in `tools_config.py`.
+The `tool` field selects which coding assistant launches in that session. Supported values: `"claude"` (Claude Code, default), `"opencode"` (OpenCode), and `"grok"` (Grok Build). Adding a new tool only requires adding an entry to `TOOLS` in `tools_config.py`. The launcher automatically uses the registered `function_name` for auto-start (e.g. `grok` for Grok Build).
 
 You can edit `sessions.json` directly if you prefer; the GUI re-reads it when you click **Reload**.
 
@@ -414,7 +435,7 @@ The repo's `~/.tmux.conf` seed sets:
 claude-sessions-app/
   session_launch.py     # reads sessions.json, runs wsl tmux new-session
   sessions_gui.pyw      # dark-mode GUI (Tkinter + sv-ttk) with tool selector
-  tools_config.py       # tool registry (Claude Code, OpenCode, extensible)
+  tools_config.py       # tool registry (Claude Code, OpenCode, Grok Build, extensible) — rename/rebrand to AI Sessions complete
   sessions.json         # config (auto-created on first Save, gitignored)
   README.md
   LICENSE
@@ -422,7 +443,7 @@ claude-sessions-app/
 
 ## Customization
 
-- **Add a new coding assistant:** add an entry to `TOOLS` in `tools_config.py` — no other changes needed.
+- **Add a new coding assistant:** add an entry to `TOOLS` in `tools_config.py` — no other changes needed (the GUI dropdown, launcher, diagnostics, and auto-start all use it automatically). Example: Grok Build support was added this way, and the internal function name was later aligned to "grok" for simplicity.
 - **Change the default wrapper dir:** edit `WRAPPER_DIR` in `sessions_gui.pyw`.
 - **Change the default WSL distro:** set the `CLAUDE_SESSIONS_DISTRO` environment variable or edit `WSL_DISTRO` in `session_launch.py`.
 - **Change the shell that tmux launches:** default is bash; edit the `build_tmux_args` function in `session_launch.py`.

@@ -3,7 +3,7 @@
 Dynamic session list — start with 3 rows by default. A minimal ✕ per row
 removes that session; a single centered ＋ below the list adds one.
 
-Each row: folder picker, auto-claude toggle, link-memory toggle, launch,
+Each row: folder picker, auto-start toggle, link-memory toggle, launch,
 remove. Tooltips explain every field; a Help button opens a readme.
 
 Per-session wrappers (ses1.cmd, ses2.cmd, ...) are created in
@@ -75,7 +75,7 @@ def apply_dark_title_bar(window: tk.Misc) -> None:
         pass
 
 
-HELP_TEXT = """Sessions — how it works
+HELP_TEXT = """AI Sessions — how it works
 
 Each row is a named tmux session inside WSL Ubuntu.
 Typing the session name (e.g. ses1) in any terminal attaches to it.
@@ -95,12 +95,12 @@ Folder
   any project directory on the Windows filesystem.
 
 Tool
-  Which AI coding assistant to launch. Currently supports Claude Code and
-  OpenCode. Each tool has its own shell helper function (klaud / ocd).
+  Which AI coding assistant to launch. Supports Claude Code, OpenCode, and
+  Grok Build. Each tool has its own shell helper function (klaud / ocd / gkd).
 
 Auto-start
   When on, the session's first run executes the tool's helper function
-  (e.g. klaud for Claude Code, ocd for OpenCode). For Claude this resumes
+  (e.g. klaud for Claude Code, ocd for OpenCode, gkd for Grok Build). For Claude this resumes
   an existing conversation for that folder if one exists, or starts fresh
   with --dangerously-skip-permissions.
 
@@ -109,7 +109,7 @@ Link memory (default: on)
   to the Windows side's equivalent directory. Effect: the tool running in
   WSL and in native Windows see the same per-project history for that folder.
   Safe and idempotent — never overwrites a real directory.
-  (OpenCode stores sessions in its own database, so this is skipped for it.)
+  (OpenCode and Grok Build store sessions in their own databases / persistent stores, so this is skipped for them.)
 
 Launch
   Opens a new console window and runs the session. Saves changes first.
@@ -236,11 +236,17 @@ def save_config(cfg: dict) -> None:
 def ensure_wrapper(name: str) -> None:
     WRAPPER_DIR.mkdir(parents=True, exist_ok=True)
     wrapper = WRAPPER_DIR / f"{name}.cmd"
-    if not wrapper.exists():
-        wrapper.write_text(
-            f'@echo off\r\npython "{LAUNCHER}" {name} %*\r\n',
-            encoding="ascii",
-        )
+    # Always (re)write the wrapper so it points at the current session_launch.py.
+    # Use the same Python executable as the running GUI (converted from pythonw.exe
+    # to python.exe for console use) so `sesN` commands are consistent with the GUI
+    # and not dependent on whatever bare `python` resolves to in PATH.
+    py = sys.executable
+    if "pythonw" in py.lower():
+        py = py.replace("pythonw.exe", "python.exe").replace("PythonW.exe", "python.exe")
+    wrapper.write_text(
+        f'@echo off\r\n"{py}" "{LAUNCHER}" {name} %*\r\n',
+        encoding="ascii",
+    )
 
 
 def remove_wrapper(name: str) -> None:
@@ -255,9 +261,9 @@ TOOLTIPS = {
     "Name": "Session name. Type this in any terminal to attach (e.g. ses1).",
     "Folder": "The directory the tool opens in when the session is first created.",
     "Browse": "Pick a folder from a file dialog.",
-    "Tool": "Which AI coding assistant to launch in this session. Each tool has its own shell helper function (klaud for Claude Code, ocd for OpenCode).",
-    "Auto-start": "If on, running the session auto-starts the tool's helper function: for Claude Code this resumes an existing conversation for that folder if one exists, or starts a fresh one with --dangerously-skip-permissions.",
-    "Link memory": "Creates a WSL symlink so Windows and WSL tool instances share the same per-project conversation history for this folder. Safe and idempotent. Skipped for tools without per-project memory dirs (e.g. OpenCode).",
+    "Tool": "Which AI coding assistant to launch in this session. Each tool has its own shell helper function (klaud for Claude Code, ocd for OpenCode, gkd for Grok Build).",
+    "Auto-start": "If on, running the session auto-starts the tool's helper function: for Claude Code this resumes an existing conversation for that folder if one exists, or starts a fresh one with --dangerously-skip-permissions. For other tools it launches the agent (the tool itself often handles resume/continue).",
+    "Link memory": "Creates a WSL symlink so Windows and WSL tool instances share the same per-project conversation history for this folder. Safe and idempotent. Skipped for tools without per-project memory dirs (e.g. OpenCode, Grok Build).",
     "Launch": "Saves changes and opens a new console that runs this session.",
     "Remove row": "Removes this row and its sesN.cmd wrapper. Does not touch tool memory or a running tmux session.",
     "Add row": "Appends the next session (sesN+1) with default settings (link memory on).",
@@ -297,7 +303,7 @@ class SessionsApp(tk.Tk):
 
     def __init__(self):
         super().__init__()
-        self.title("Sessions")
+        self.title("AI Sessions")
         self.minsize(900, 220)
         if HAS_SV_TTK:
             sv_ttk.set_theme("dark")
@@ -333,8 +339,8 @@ class SessionsApp(tk.Tk):
                                   command=self._open_diagnostics, width=12)
         diagnose_btn.pack(side=tk.LEFT, padx=(6, 0))
         Tooltip(diagnose_btn,
-                "Run a self-check of every prerequisite (WSL, Ubuntu, tmux, claude, "
-                "klaud, PATH, sessions, OpenSSH, authorized_keys, Tailscale, ADB). "
+                "Run a self-check of every prerequisite (WSL, Ubuntu, tmux, tools, "
+                "klaud/ocd/gkd functions, PATH, sessions, OpenSSH, authorized_keys, Tailscale, ADB). "
                 "Shows a fix hint for anything missing.")
         rotate_toolbar_btn = ttk.Button(toolbar, text="🔑 Rotate SSH",
                                         command=self._open_rotation, width=14)
@@ -515,7 +521,7 @@ class SessionsApp(tk.Tk):
             "Remove session",
             f"Remove {name}?\n\nThis deletes the row from sessions.json and removes "
             f"the {name}.cmd wrapper command. It does NOT kill a running tmux session "
-            f"or delete any Claude memory.",
+            f"or delete any tool memory.",
             parent=self,
         ):
             return
@@ -595,8 +601,14 @@ class SessionsApp(tk.Tk):
             return
         try:
             CREATE_NEW_CONSOLE = 0x00000010
+            # Use console python (not pythonw) so the new console window actually appears
+            # and shows output (the diagnostic banner + tmux). Matches the logic we use
+            # when generating the .cmd wrappers.
+            py = sys.executable
+            if "pythonw" in py.lower():
+                py = py.replace("pythonw.exe", "python.exe").replace("PythonW.exe", "python.exe")
             subprocess.Popen(
-                [sys.executable, str(LAUNCHER), name],
+                [py, str(LAUNCHER), name],
                 creationflags=CREATE_NEW_CONSOLE,
             )
             self._flash_status(f"Launched {name}.")
@@ -611,7 +623,7 @@ class SessionsApp(tk.Tk):
 
     def _show_help(self):
         win = tk.Toplevel(self)
-        win.title("Sessions — Help")
+        win.title("AI Sessions — Help")
         win.geometry("720x600")
         win.configure(bg=DARK["bg"])
         apply_dark_title_bar(win)

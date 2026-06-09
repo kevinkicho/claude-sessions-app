@@ -1,5 +1,5 @@
 """Launches a named WSL tmux session in a configured folder, and optionally
-ensures a symlink so WSL-side tool (Claude Code / OpenCode) shares state
+ensures a symlink so WSL-side tool (Claude Code / OpenCode / Grok Build) shares state
 with the Windows side.
 
 Usage: session_launch.py <sesN>
@@ -129,6 +129,10 @@ def main() -> int:
     if info is None:
         print(f"[session_launch] no config for {name!r}. Run the Sessions GUI and pick a folder.", file=sys.stderr)
         return 1
+
+    tool_key = info.get("tool") or DEFAULT_TOOL
+    tool = get_tool(tool_key)
+    print(f"[session_launch] launching {name} with tool={tool_key} (function={tool.get('function_name')})", file=sys.stderr)
 
     if info.get("symlink_memory") and info.get("folder"):
         tool_key = info.get("tool") or DEFAULT_TOOL
