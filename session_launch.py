@@ -124,23 +124,35 @@ def main() -> int:
         return 2
 
     name = sys.argv[1]
+
+    # Very visible diagnostics so the console window shows exactly what is happening
+    print("=" * 70, file=sys.stderr)
+    print(f"[session_launch] START: name={name}", file=sys.stderr)
+    print(f"[session_launch] script file: {__file__}", file=sys.stderr)
+    print(f"[session_launch] python: {sys.executable}", file=sys.stderr)
+
     cfg = load_config()
     info = cfg.get(name)
     if info is None:
         print(f"[session_launch] no config for {name!r}. Run the Sessions GUI and pick a folder.", file=sys.stderr)
+        print("=" * 70, file=sys.stderr)
         return 1
 
     tool_key = info.get("tool") or DEFAULT_TOOL
     tool = get_tool(tool_key)
-    print(f"[session_launch] launching {name} with tool={tool_key} (function={tool.get('function_name')})", file=sys.stderr)
+    print(f"[session_launch] from sessions.json: tool={tool_key}  function={tool.get('function_name')}", file=sys.stderr)
+    print(f"[session_launch] auto-start={'auto_claude' in info and info['auto_claude']}", file=sys.stderr)
+    print("=" * 70, file=sys.stderr)
 
     if info.get("symlink_memory") and info.get("folder"):
-        tool_key = info.get("tool") or DEFAULT_TOOL
-        ok, msg = ensure_memory_symlink(info["folder"], tool_key)
+        tool_key2 = info.get("tool") or DEFAULT_TOOL
+        ok, msg = ensure_memory_symlink(info["folder"], tool_key2)
         prefix = "[session_launch] symlink:" if ok else "[session_launch] symlink FAILED:"
         print(f"{prefix} {msg}", file=sys.stderr)
 
     args = build_tmux_args(name, info)
+    print(f"[session_launch] running: {' '.join(args)}", file=sys.stderr)
+    sys.stderr.flush()
     return subprocess.call(args)
 
 
