@@ -33,7 +33,7 @@ if (-not $TokenOnly) {
     if (Test-Path $pubPath) { Remove-Item $pubPath -Force }
 
     $comment = "stt-app-rotated-$(Get-Date -Format 'yyyy-MM-dd')"
-    & ssh-keygen -t ed25519 -f $keyPath -N '""' -C $comment -q
+    & ssh-keygen -t ed25519 -f $keyPath -N '' -C $comment -q
     if (-not (Test-Path $keyPath)) {
         throw "ssh-keygen did not produce $keyPath"
     }

@@ -57,11 +57,11 @@ def ensure_memory_symlink(folder: str, tool_key: str | None = None) -> Tuple[boo
 
     # Windows user's home translated to the WSL /mnt/c/... form.
     win_home_wsl = windows_to_wsl(str(Path.home()))
-    src = f"{win_home_wsl}/{template.lstrip('$HOME/')}"
+    src = f"{win_home_wsl}/{template.removeprefix('$HOME/')}"
     # Expand {slug} placeholder.
     src = src.replace("{slug}", win_slug)
     # Parent dir path for `mkdir -p` and the dst symlink.
-    dst_parent = template.lstrip("$HOME/").replace("{slug}", wsl_slug)
+    dst_parent = template.removeprefix("$HOME/").replace("{slug}", wsl_slug)
     dst_rel = dst_parent  # full relative path under $HOME for the symlink target
     # The parent of the symlink target (where the symlink should live).
     dst_parent_dir = "/".join(dst_parent.split("/")[:-1])
@@ -100,7 +100,7 @@ def load_config() -> dict:
 
 def build_tmux_args(session_name: str, info: dict) -> list[str]:
     folder = (info.get("folder") or "").strip()
-    auto = bool(info.get("auto_claude"))  # backward compat — means "auto-start the tool"
+    auto = bool(info.get("auto_start", info.get("auto_claude", False)))
     tool_key = info.get("tool") or DEFAULT_TOOL
     tool = get_tool(tool_key)
 
@@ -141,7 +141,7 @@ def main() -> int:
     tool_key = info.get("tool") or DEFAULT_TOOL
     tool = get_tool(tool_key)
     print(f"[session_launch] from sessions.json: tool={tool_key}  function={tool.get('function_name')}", file=sys.stderr)
-    print(f"[session_launch] auto-start={'auto_claude' in info and info['auto_claude']}", file=sys.stderr)
+    print(f"[session_launch] auto-start={info.get('auto_start', info.get('auto_claude', False))}", file=sys.stderr)
     print("=" * 70, file=sys.stderr)
 
     if info.get("symlink_memory") and info.get("folder"):

@@ -21,7 +21,6 @@ build/
 ssh_key
 ssh_key.pub*
 rotation-tokens.json
-*.log
 tools/
 
 # Per-machine session list — leaks project folder paths and username if committed.

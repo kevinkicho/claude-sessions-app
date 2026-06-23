@@ -96,11 +96,11 @@ Folder
 
 Tool
   Which AI coding assistant to launch. Supports Claude Code, OpenCode, and
-  Grok Build. Each tool has its own shell helper function (klaud / ocd / gkd).
+  Grok Build. Each tool has its own shell helper function (klaud / ocd / grok).
 
 Auto-start
   When on, the session's first run executes the tool's helper function
-  (e.g. klaud for Claude Code, ocd for OpenCode, gkd for Grok Build). For Claude this resumes
+  (e.g. klaud for Claude Code, ocd for OpenCode, grok for Grok Build). For Claude this resumes
   an existing conversation for that folder if one exists, or starts fresh
   with --dangerously-skip-permissions.
 
@@ -203,7 +203,7 @@ class Tooltip:
 
 
 def default_entry() -> dict:
-    return {"folder": "", "auto_claude": True, "symlink_memory": True, "tool": DEFAULT_TOOL}
+    return {"folder": "", "auto_start": True, "symlink_memory": True, "tool": DEFAULT_TOOL}
 
 
 def _ses_num(name: str) -> int:
@@ -224,6 +224,9 @@ def load_config() -> dict:
     for name, entry in list(cfg.items()):
         for k, v in default_entry().items():
             entry.setdefault(k, v)
+        # Migrate legacy auto_claude → auto_start
+        if "auto_claude" in entry and "auto_start" not in entry:
+            entry["auto_start"] = entry.pop("auto_claude")
     return cfg
 
 
@@ -261,7 +264,7 @@ TOOLTIPS = {
     "Name": "Session name. Type this in any terminal to attach (e.g. ses1).",
     "Folder": "The directory the tool opens in when the session is first created.",
     "Browse": "Pick a folder from a file dialog.",
-    "Tool": "Which AI coding assistant to launch in this session. Each tool has its own shell helper function (klaud for Claude Code, ocd for OpenCode, gkd for Grok Build).",
+    "Tool": "Which AI coding assistant to launch in this session. Each tool has its own shell helper function (klaud for Claude Code, ocd for OpenCode, grok for Grok Build).",
     "Auto-start": "If on, running the session auto-starts the tool's helper function: for Claude Code this resumes an existing conversation for that folder if one exists, or starts a fresh one with --dangerously-skip-permissions. For other tools it launches the agent (the tool itself often handles resume/continue).",
     "Link memory": "Creates a WSL symlink so Windows and WSL tool instances share the same per-project conversation history for this folder. Safe and idempotent. Skipped for tools without per-project memory dirs (e.g. OpenCode, Grok Build).",
     "Launch": "Saves changes and opens a new console that runs this session.",
@@ -324,9 +327,14 @@ class SessionsApp(tk.Tk):
         self.config_data = load_config()
         self._row_state: list[dict] = []
         self._add_btn_widget: tk.Widget | None = None
+        self._status_after_id: str | None = None
+        self._save_btn: ttk.Button | None = None
+        self._reload_btn: ttk.Button | None = None
+        self._is_saving = False
         self._build_ui()
         self._repopulate_rows()
         # Set an initial size now that rows are laid out.
+        self._fit_canvas_height()
         self.geometry(f"1200x{self._fitted_height()}")
 
     # ---- building ----
@@ -356,14 +364,13 @@ class SessionsApp(tk.Tk):
         ).pack(side=tk.LEFT, padx=12)
 
         body_wrap = ttk.Frame(self, padding=(16, 4))
-        body_wrap.pack(fill=tk.X)
+        body_wrap.pack(fill=tk.BOTH, expand=True)
         self._body_wrap = body_wrap
 
-        self._canvas = tk.Canvas(body_wrap, highlightthickness=0, bg=DARK["bg"], bd=0, height=0)
+        self._canvas = tk.Canvas(body_wrap, highlightthickness=0, bg=DARK["bg"], bd=0)
         self._scroll = ttk.Scrollbar(body_wrap, orient="vertical", command=self._canvas.yview)
         self._canvas.configure(yscrollcommand=self._scroll.set)
         self._canvas.pack(side="left", fill="both", expand=True)
-        # Scrollbar packing is managed dynamically by _fit_canvas_height.
 
         self._rows_frame = ttk.Frame(self._canvas)
         self._rows_frame.bind(
@@ -372,8 +379,7 @@ class SessionsApp(tk.Tk):
         )
         self._canvas.create_window((0, 0), window=self._rows_frame, anchor="nw",
                                    tags="rows_frame")
-        self._canvas.bind("<Configure>",
-                          lambda e: self._canvas.itemconfigure("rows_frame", width=e.width))
+        self._canvas.bind("<Configure>", self._on_canvas_resize)
         self._canvas.bind_all("<MouseWheel>", self._on_mousewheel)
 
         self._build_headers()
@@ -384,13 +390,13 @@ class SessionsApp(tk.Tk):
         self.status = ttk.Label(footer, text="")
         self.status.pack(side=tk.LEFT)
 
-        save_btn = ttk.Button(footer, text="Save", command=self._save, width=10)
-        save_btn.pack(side=tk.RIGHT)
-        Tooltip(save_btn, "Writes sessions.json. Creates/refreshes symlinks for rows with Link memory on. Ensures each session has its wrapper command.")
+        self._save_btn = ttk.Button(footer, text="Save", command=self._save, width=10)
+        self._save_btn.pack(side=tk.RIGHT)
+        Tooltip(self._save_btn, "Writes sessions.json. Creates/refreshes symlinks for rows with Link memory on. Ensures each session has its wrapper command.")
 
-        reload_btn = ttk.Button(footer, text="Reload", command=self._reload, width=10)
-        reload_btn.pack(side=tk.RIGHT, padx=(0, 6))
-        Tooltip(reload_btn, "Discards unsaved UI changes and re-reads sessions.json from disk.")
+        self._reload_btn = ttk.Button(footer, text="Reload", command=self._reload, width=10)
+        self._reload_btn.pack(side=tk.RIGHT, padx=(0, 6))
+        Tooltip(self._reload_btn, "Discards unsaved UI changes and re-reads sessions.json from disk.")
 
     def _build_headers(self):
         headers = ("Name", "Folder", "Browse", "Tool", "Auto-start", "Link memory", "Launch", "")
@@ -404,7 +410,8 @@ class SessionsApp(tk.Tk):
     # ---- row management ----
 
     def _repopulate_rows(self):
-        """Full rebuild — only called on Reload. Add/Remove are surgical."""
+        """Full rebuild — builds all rows from config_data. Caller is
+        responsible for sizing the window afterward."""
         for state in self._row_state:
             for w in state["widgets"]:
                 try:
@@ -424,7 +431,6 @@ class SessionsApp(tk.Tk):
             self._build_row(idx, name, self.config_data[name])
 
         self._place_add_button()
-        self.after(0, self._fit_window)
 
     def _place_add_button(self):
         """Create the ＋ button if it doesn't exist, and grid it in the row
@@ -441,7 +447,7 @@ class SessionsApp(tk.Tk):
 
     def _build_row(self, row_idx: int, name: str, entry: dict):
         folder_var = tk.StringVar(value=entry.get("folder", ""))
-        auto_var = tk.BooleanVar(value=bool(entry.get("auto_claude", True)))
+        auto_var = tk.BooleanVar(value=bool(entry.get("auto_start", entry.get("auto_claude", True))))
         link_var = tk.BooleanVar(value=bool(entry.get("symlink_memory", True)))
         tool_var = tk.StringVar(value=entry.get("tool") or DEFAULT_TOOL)
 
@@ -514,6 +520,7 @@ class SessionsApp(tk.Tk):
         self._build_row(new_row_idx, name, self.config_data[name])
         self._place_add_button()
         self._fit_window()
+        self._canvas.yview_moveto(1.0)
         self._flash_status(f"Added {name}. Pick a folder, then Save.")
 
     def _remove_row(self, name: str):
@@ -564,7 +571,7 @@ class SessionsApp(tk.Tk):
         for st in self._row_state:
             self.config_data[st["name"]] = {
                 "folder": st["folder_var"].get().strip(),
-                "auto_claude": bool(st["auto_var"].get()),
+                "auto_start": bool(st["auto_var"].get()),
                 "symlink_memory": bool(st["link_var"].get()),
                 "tool": st["tool_var"].get() or DEFAULT_TOOL,
             }
@@ -579,11 +586,41 @@ class SessionsApp(tk.Tk):
         return msgs
 
     def _save(self):
+        if self._is_saving:
+            return
+        self._is_saving = True
         self._commit_to_config()
         save_config(self.config_data)
         for name in self.config_data:
             ensure_wrapper(name)
-        msgs = self._apply_symlinks()
+
+        symlink_names = [
+            n for n, i in self.config_data.items()
+            if i.get("symlink_memory") and i.get("folder")
+        ]
+        if not symlink_names:
+            self._is_saving = False
+            self._flash_status("Saved.")
+            return
+
+        self._save_btn.configure(state="disabled")
+        self._reload_btn.configure(state="disabled")
+        self._flash_status("Saving — creating symlinks...")
+        threading.Thread(target=self._do_symlinks_bg, args=(symlink_names,), daemon=True).start()
+
+    def _do_symlinks_bg(self, symlink_names: list[str]):
+        msgs = []
+        for name in symlink_names:
+            info = self.config_data.get(name, {})
+            ok, _ = ensure_memory_symlink(info.get("folder", ""), info.get("tool"))
+            prefix = "✓" if ok else "✗"
+            msgs.append(f"{prefix} {name}")
+        self.after(0, lambda: self._finish_save(msgs))
+
+    def _finish_save(self, msgs: list[str]):
+        self._is_saving = False
+        self._save_btn.configure(state="normal")
+        self._reload_btn.configure(state="normal")
         if msgs:
             self._flash_status("Saved.  " + "  ".join(msgs))
         else:
@@ -592,6 +629,7 @@ class SessionsApp(tk.Tk):
     def _reload(self):
         self.config_data = load_config()
         self._repopulate_rows()
+        self.after(0, self._fit_window)
         self._flash_status("Reloaded from disk.")
 
     def _launch(self, name: str):
@@ -658,29 +696,48 @@ class SessionsApp(tk.Tk):
 
     def _flash_status(self, msg: str):
         self.status.config(text=msg)
-        self.after(5000, lambda: self.status.config(text=""))
+        if self._status_after_id is not None:
+            try:
+                self.after_cancel(self._status_after_id)
+            except Exception:
+                pass
+        self._status_after_id = self.after(5000, lambda: self.status.config(text=""))
 
     # ---- window sizing ----
 
     def _fit_canvas_height(self):
         """Size the scrollable canvas to the rows-frame height, up to a cap.
-        Show the scrollbar only when content exceeds the cap."""
+        On user resize the canvas can grow beyond this cap because
+        body_wrap has expand=True.  Also manages the scrollbar."""
         self._rows_frame.update_idletasks()
         req = self._rows_frame.winfo_reqheight()
-        target = min(req, self.MAX_ROWS_HEIGHT)
-        self._canvas.configure(height=target)
-        if req > self.MAX_ROWS_HEIGHT:
-            if not self._scroll.winfo_ismapped():
-                self._scroll.pack(side="right", fill="y")
-        else:
-            if self._scroll.winfo_ismapped():
-                self._scroll.pack_forget()
+        self._canvas.configure(height=min(req, self.MAX_ROWS_HEIGHT))
+        self._update_scrollbar()
+
+    def _update_scrollbar(self):
+        """Show the scrollbar when content exceeds the canvas viewport."""
+        try:
+            content_h = self._rows_frame.winfo_reqheight()
+            viewport_h = self._canvas.winfo_height()
+            if content_h > viewport_h + 1:
+                if not self._scroll.winfo_ismapped():
+                    self._scroll.pack(side="right", fill="y")
+            else:
+                if self._scroll.winfo_ismapped():
+                    self._scroll.pack_forget()
+        except Exception:
+            pass
+
+    def _on_canvas_resize(self, event):
+        """Keep the inner frame width in sync and re-check the scrollbar."""
+        self._canvas.itemconfigure("rows_frame", width=event.width)
+        self._update_scrollbar()
 
     def _fitted_height(self) -> int:
-        """Total window height to tightly fit current content."""
-        self._fit_canvas_height()
-        self.update_idletasks()
-        # reqheight of the root = sum of all packed children's reqheights.
+        """Total window height to tightly fit current content.
+
+        Caller must have already flushed layout via _fit_canvas_height or
+        update_idletasks before calling this."""
         return self.winfo_reqheight()
 
     def _fit_window(self):
@@ -688,6 +745,7 @@ class SessionsApp(tk.Tk):
         Forces a paint pass before resizing so the newly-exposed area shows our
         dark background instead of Windows' default white brush."""
         current_w = self.winfo_width() if self.winfo_width() > 1 else 1200
+        self._fit_canvas_height()
         target_h = self._fitted_height()
         # Paint pending updates first, then apply the geometry change, then
         # immediately flush again so DWM composites with our dark content.

@@ -53,7 +53,7 @@ Under the hood:
 2. On save, the GUI generates `ses1.cmd`, `ses2.cmd`, ... in a directory on your Windows PATH.
 3. Each `sesN.cmd` calls `session_launch.py`, which runs `wsl -d Ubuntu -- tmux new-session -A -s sesN -c <folder>`. `-A` attaches if the session already exists, creates otherwise.
 4. A tool registry (`tools_config.py`) defines each assistant's CLI, shell helper function (`klaud` for Claude, `ocd` for OpenCode, `grok` for Grok Build), and memory paths. Adding support for a new tool is a single entry in this file. The launcher and GUI use it for everything.
-5. If "Auto-start" is on, the session's first run executes the tool's helper function (e.g. `klaud` resumes an existing Claude conversation, or starts fresh; `gkd` launches Grok Build).
+5. If "Auto-start" is on, the session's first run executes the tool's helper function (e.g. `klaud` resumes an existing Claude conversation, or starts fresh; `grok` launches Grok Build).
 6. If "Link memory" is on, a symlink is created inside WSL so Windows and WSL instances share the same per-project conversation history (only for tools that use per-project memory directories on disk, e.g. Claude Code).
 
 ## Features
@@ -218,12 +218,12 @@ ocd() {
 EOF
 ```
 
-**For Grok Build (optional wrapper):**
+**For Grok Build (recommended wrapper for reliable continuation):**
 ```
 cat >> ~/.bashrc << 'EOF'
 
 grok() {
-    command grok "$@"
+    command grok --continue "$@"
 }
 EOF
 ```
@@ -233,7 +233,7 @@ Then reload:
 source ~/.bashrc
 ```
 
-**Note:** Because the tool name matches the binary, you can often skip defining any wrapper — `bash -ic 'grok; exec bash'` will find the installed `grok` command directly. The wrapper above is only needed if you want to customize behavior. A `setup-grok-helper.sh` is provided in the folder for one-command setup.
+**Important for continuation:** Unlike a raw `grok` invocation, the wrapper uses `--continue` (similar to OpenCode's `--continue`) to explicitly resume the previous Grok Build session and utilize its built-in sessions memory / context for that workspace. The launcher cds into your project folder first, then runs this. Grok Build has strong native persistent memory (including `/remember` support), but we make continuation explicit in the auto-start path so it behaves consistently with the other tools. A `setup-grok-helper.sh` (or equivalent) is provided in the folder for one-command setup of the wrapper.
 
 4. **Enable OpenSSH Server** in an elevated Windows PowerShell so your phone can SSH in:
 
@@ -391,7 +391,7 @@ Example shape:
 {
   "ses1": {
     "folder": "C:\\Users\\you\\Desktop\\project-a",
-    "auto_claude": true,
+    "auto_start": true,
     "symlink_memory": true,
     "tool": "opencode"
   },

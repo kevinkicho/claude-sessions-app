@@ -78,12 +78,14 @@ TOOLS = {
         "function_name": "grok",
         "function_body": (
             "grok() {\n"
-            '    command grok "$@"\n'
+            '    command grok --continue "$@"\n'
             "}"
         ),
-        # Grok Build (xAI) manages its own persistent sessions, /remember context,
-        # and workspace memory. No simple per-project directory like Claude Code,
-        # so memory symlinking is skipped (like OpenCode).
+        # Grok Build (xAI) is designed with strong built-in persistent memory
+        # and session continuation across runs in the same workspace.
+        # We explicitly pass --continue (like OpenCode) to ensure it resumes
+        # the previous conversation / utilizes its sessions memory rather than
+        # starting fresh. No per-project memory dir symlinking (memory_dir_template: None).
         "memory_dir_template": None,
         "slug_windows": _default_slug_windows,
         "slug_wsl": _default_slug_wsl,
